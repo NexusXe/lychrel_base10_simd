@@ -348,7 +348,7 @@ macro_rules! integer {
             }
             current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
 
-            if current_limb_digits.len() == 64 {
+            if current_limb_digits.len() == 64 {1
                 let mut limb_bytes: [u8; 64] = [0; 64];
                 for (i, &digit) in current_limb_digits.iter().enumerate() {
                     limb_bytes[i] = digit;
