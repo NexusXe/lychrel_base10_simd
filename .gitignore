@@ -1,5 +1,10 @@
 target/
-
+*.bin
+checkpoint_*.bin
 .vscode/
 .*
 !.gitignore
+!.cargo
+
+
+checkpoints/

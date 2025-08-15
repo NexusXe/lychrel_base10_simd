@@ -1,0 +1,6 @@
+[build]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=32"]
+
+[unstable]
+build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
+build-std-features = ["panic_immediate_abort"]

@@ -4,39 +4,54 @@ cargo-features = ["profile-rustflags"]
 name = "lychrel_base10_simd"
 version = "0.1.0"
 edition = "2024"
+default-run = "lychrel_base10_simd"
 
 [dependencies]
-affinity = "0.1.2"
-# rayon = "1.10.0"
+# rayon = "1.11.0"
+# affinity = "0.1"
 
+[dev-dependencies]
+rand = "0.9"
 
 [profile.release]
+strip = true
 opt-level = 3
 debug = false
-debug-assertions=false
+debug-assertions = false
 overflow-checks = false
-panic = "abort"
 codegen-units = 1
-# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
 lto = "fat"
-
-[profile.release.package."*"]
-opt-level = 3
-debug = true
-overflow-checks = false
-codegen-units = 1
-# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
+panic = "abort"
+rustflags = ["-Z", "fmt-debug=none"]
 
 [profile.release.build-override]
+strip = true
 opt-level = 3
-debug = true
+debug = false
+debug-assertions = false
 overflow-checks = false
 codegen-units = 1
-# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
+rustflags = ["-Z", "fmt-debug=none"]
+
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
+rustflags = ["-C", "force-frame-pointers=yes"]
+
+[profile.dev]
+opt-level = 1
+debug = true
+overflow-checks = true
+debug-assertions = true
+lto = false
+rustflags = ["-C", "force-frame-pointers=yes"]
+panic = "abort"
 
 [profile.test]
 inherits = "dev"
-rustflags = ["-C", "target-cpu=native"]
+opt-level = 2
+overflow-checks = true
+debug-assertions = true
+lto = "thin"
+rustflags = ["-C", "force-frame-pointers=yes"]

@@ -1,4 +1,6 @@
 use super::*;
+use rand::prelude::*;
+
 #[test]
 fn test_len_empty() {
     let limb = Limb::new();
@@ -87,15 +89,23 @@ fn test_integer_add() {
     let result = integer1 + integer2;
     assert_eq!(
         result,
-        Integer(vec![
-            Limb(u8x64::splat(0)),
-            Limb(u8x64::from([
-                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-            ]))
-        ])
+        (
+            Integer(vec![
+                Limb(u8x64::splat(0)),
+                Limb(u8x64::from([
+                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]))
+            ]),
+            true
+        )
     );
+
+    let limb1 = integer!("7");
+    let limb2 = integer!("1");
+    let result = limb1 + limb2;
+    assert_eq!(result, (integer!("8"), false))
 }
 
 #[test]
@@ -161,6 +171,40 @@ fn test_pack_unpack_limb() {
 }
 
 #[test]
+fn test_pack_unpack_limb_random() {
+    fn test_with_seed(seed: u64) {
+        // get two deterministically random limbs from a SmallRng with a constant seed
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut arr1: [u8; 64] = [0; 64];
+        let mut arr2: [u8; 64] = [0; 64];
+
+        for (item1, item2) in arr1.iter_mut().zip(arr2.iter_mut()) {
+            *item1 = rng.random_range(0..10);
+            *item2 = rng.random_range(0..10);
+        }
+        let limb1 = Limb(u8x64::from(arr1));
+        let limb2 = Limb(u8x64::from(arr2));
+
+        let integer = Integer(vec![limb1, limb2]);
+        let packed = integer.clone().pack();
+        assert_eq!(packed.clone().unpack(), integer);
+
+        let bytes: Vec<u8> = packed.clone().into_bytes();
+        let organized_bytes: Vec<[u8; 64]> = bytes
+            .chunks(64)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect();
+
+        let reconstructed = Integer::from_bytes(organized_bytes);
+        assert_eq!(reconstructed, packed);
+        assert_eq!(reconstructed.unpack(), integer);
+    }
+
+    test_with_seed(0xdeadbeef);
+    test_with_seed(0xbaadf00d);
+}
+
+#[test]
 fn test_pack_unpack_integer() {
     let limb1: Limb = u8x64::splat(9).into();
     let limb2: Limb = u8x64::splat(1).into();
@@ -171,4 +215,63 @@ fn test_pack_unpack_integer() {
     let packed = Integer(vec![u8x64::splat(0x19).into()]);
     let unpacked = packed.unpack();
     assert_eq!(unpacked, Integer(vec![limb1, limb2]));
+
+    let packed = Integer(vec![u8x64::splat(0x19).into(); 4]);
+    let unpacked = packed.unpack();
+    assert_eq!(
+        unpacked,
+        Integer(vec![limb1, limb2, limb1, limb2, limb1, limb2, limb1, limb2])
+    );
+}
+
+#[test]
+fn test_write_and_read_checkpoint() {
+    use std::io::Write;
+
+    const LEN: usize = 13;
+    let mut rng = SmallRng::seed_from_u64(0xABCDEF0123456789);
+    let mut arrs: Vec<[u8; 64]> = Vec::with_capacity(LEN);
+    for _ in 0..LEN {
+        let mut arr: [u8; 64] = [0; 64];
+        for item in arr.iter_mut() {
+            *item = rng.random_range(0..10);
+        }
+        arrs.push(arr);
+    }
+
+    let last_arr = arrs.last_mut().unwrap();
+
+    for item in last_arr.iter_mut().take(64).skip(32) {
+        *item = 0;
+    }
+
+    let mut limbs: Vec<Limb> = Vec::with_capacity(LEN);
+    for arr in arrs {
+        limbs.push(Limb(u8x64::from(arr)));
+    }
+
+    let integer = Integer(limbs);
+    assert!(!integer.has_carries());
+    assert_eq!(integer, integer.clone().pack().unpack());
+
+    // instead of writing to an actual file, write to a buffer
+    let mut buffer = Vec::new();
+
+    let data_to_write = integer.clone().pack().into_bytes();
+
+    buffer.write_all(&data_to_write).unwrap();
+
+    // now read it as if it was from a file
+
+    let mut checkpoint_read: Vec<u8> = Vec::new();
+    checkpoint_read.write_all(&buffer).unwrap();
+    let organized_bytes: Vec<[u8; 64]> = checkpoint_read
+        .chunks(64)
+        .map(|chunk| chunk.try_into().unwrap())
+        .collect();
+    let integer_read = Integer::from_bytes(organized_bytes);
+
+    //assert_eq!(integer, integer_read.clone());
+    assert_eq!(integer, integer_read.clone().unpack());
+    assert!(!integer_read.clone().unpack().has_carries());
 }

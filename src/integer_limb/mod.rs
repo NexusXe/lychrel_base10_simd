@@ -1,5 +1,8 @@
 use std::arch::x86_64::*;
 use std::fmt::Write;
+#[cfg(not(debug_assertions))]
+use std::hint::unreachable_unchecked;
+use std::hint::{cold_path, likely};
 use std::simd::prelude::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
@@ -138,6 +141,29 @@ impl Limb {
 
         (low_vector.into(), high_vector.into())
     }
+
+    fn into_bytes(self) -> [u8; 64] {
+        let self_simd: u8x64 = self.into();
+        self_simd.into()
+    }
+
+    fn from_bytes(input: [u8; 64]) -> Self {
+        Limb(u8x64::from(input))
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        let zero: Limb = Limb(u8x64::splat(0));
+        self == &zero
+    }
+
+    fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let digits: [u8; 64] = self.0.into();
+        for i in digits.iter().rev() {
+            write!(f, "{i}")?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for Limb {
@@ -151,7 +177,7 @@ impl std::ops::Add for Limb {
 
     fn add(self, other: Self) -> Self::Output {
         //unsafe { _mm512_add_epi8(self.into(), other.into()) }.into()
-        Limb(self.0 + other.0)
+        Limb(self.0 + other.0) // should compile to be the same
     }
 }
 
@@ -181,7 +207,24 @@ impl std::fmt::Debug for Limb {
 }
 
 #[derive(Clone)]
-pub(crate) struct Integer(pub(crate) Vec<Limb>);
+pub struct Integer(pub(crate) Vec<Limb>);
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Checkpoint {
+    iteration: usize,
+    integer: Vec<u8>,
+}
+
+#[allow(dead_code)]
+impl Checkpoint {
+    pub(crate) fn new(iteration: usize, integer: Vec<u8>) -> Self {
+        Checkpoint { iteration, integer }
+    }
+
+    pub(crate) fn data(self) -> (usize, Vec<u8>) {
+        (self.iteration, self.integer)
+    }
+}
 
 #[allow(dead_code)]
 impl Integer {
@@ -194,7 +237,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -216,22 +259,46 @@ impl Integer {
         // plain reversal yields 0012 3456
         // to fix this, we can add a padding limb to the end and shift all of the data over:
         // 0012 3456 0000
-        // 1234 5600
+        // 1234 5600 00
 
         output_vec.push(Limb::new());
 
         let vec_beginning_ptr = output_vec.as_mut_ptr() as *mut u8;
         let desired_view_ptr = unsafe { (vec_beginning_ptr).add(skip_len) };
-        //debug_assert_eq!(unsafe{*vec_beginning_ptr}, 0);
+        if skip_len != 0 {
+            debug_assert_eq!(unsafe { *vec_beginning_ptr }, 0);
+        }
         debug_assert_ne!(unsafe { *desired_view_ptr }, 0);
         unsafe {
-            std::ptr::copy(desired_view_ptr, vec_beginning_ptr, (self.0.len()) * 64);
+            std::ptr::copy(desired_view_ptr, vec_beginning_ptr, (self.0.len()) * 64); // needs to be copied for alignment. unfortunate
         }
 
         output_vec.pop();
     }
 
-    fn process_carries(&mut self) {
+    pub fn has_carries(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if self.0.is_empty() {
+            unreachable!("Tried to check if empty integer has carries");
+        }
+
+        #[cfg(not(debug_assertions))]
+        if self.0.is_empty() {
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        for limb in &self.0 {
+            if limb.has_carries() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn process_carries(&mut self) -> bool {
         #[cfg(debug_assertions)]
         if self.0.is_empty() {
             unreachable!("Tried to process carries in an empty integer");
@@ -240,7 +307,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -251,16 +318,20 @@ impl Integer {
         };
 
         let mut carry: bool = false;
+        let mut ever_carried: bool = false;
 
         for limb in self.0.iter_mut() {
             if carry {
+                ever_carried = true;
                 *limb = *limb + ONE;
             }
             (*limb, carry) = limb.process_carries();
         }
         if carry {
+            ever_carried = true;
             self.0.push(ONE);
         }
+        ever_carried
     }
 
     pub(crate) fn is_palindrome(&self, other: &Self) -> bool {
@@ -272,7 +343,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -288,7 +359,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -304,7 +375,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -320,15 +391,16 @@ impl Integer {
                 1 => {
                     output_vec.push(limb_pair[0]);
                 }
-                _ => {break;}
-
+                _ => {
+                    break;
+                }
             }
         }
 
         Integer(output_vec)
     }
 
-    pub(crate) fn unpack(self) -> Self {
+    pub fn unpack(self) -> Self {
         #[cfg(debug_assertions)]
         if self.0.is_empty() {
             unreachable!("Tried to unpack an empty integer");
@@ -337,7 +409,7 @@ impl Integer {
         #[cfg(not(debug_assertions))]
         if self.0.is_empty() {
             unsafe {
-                std::hint::unreachable_unchecked();
+                unreachable_unchecked();
             }
         }
 
@@ -345,16 +417,113 @@ impl Integer {
 
         for limb in self.0.iter() {
             let (low, high) = limb.unpack();
-            output.push(low);
-            output.push(high);
+            if !low.is_empty() {
+                output.push(low);
+            }
+            if !high.is_empty() {
+                output.push(high);
+            }
         }
 
         Integer(output)
     }
+
+    #[inline]
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        let mut output: Vec<u8> = Vec::with_capacity(self.0.len() * 64);
+        for limb in self.0.iter() {
+            output.extend_from_slice(&limb.into_bytes());
+        }
+        output
+    }
+
+    #[inline]
+    pub fn from_bytes(input: Vec<[u8; 64]>) -> Integer {
+        let mut output = Vec::with_capacity(input.len());
+        for limb in input.iter() {
+            output.push(Limb::from_bytes(*limb));
+        }
+        Integer(output)
+    }
+
+    #[inline]
+    pub(crate) fn into_checkpoint(self, iteration: usize) -> Checkpoint {
+        Checkpoint {
+            iteration,
+            integer: self.pack().into_bytes(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn from_checkpoint(input: Checkpoint) -> (Integer, usize) {
+        (
+            Integer::from_bytes(Integer::chop(input.integer).unwrap()).unpack(),
+            input.iteration,
+        )
+    }
+
+    #[inline]
+    pub(crate) fn add_into_self(&mut self, rhs: Self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            if self.0.is_empty() {
+                unreachable!("Tried to add an empty integer");
+            }
+
+            if self.0.len() != rhs.0.len() {
+                unreachable!("Tried to add two integers of different lengths");
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            if self.0.is_empty() {
+                unsafe {
+                    unreachable_unchecked();
+                }
+            }
+
+            if self.0.len() != rhs.0.len() {
+                unsafe {
+                    unreachable_unchecked();
+                }
+            }
+        }
+
+        for (self_limb, other_limb) in self.0.iter_mut().zip(rhs.0.iter()) {
+            *self_limb = *self_limb + *other_limb;
+        }
+
+        self.process_carries()
+    }
+
+    #[inline]
+    pub fn chop(data: Vec<u8>) -> Option<Vec<[u8; 64]>> {
+        data.chunks(64).map(|chunk| chunk.try_into().ok()).collect()
+    }
+
+    pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output_string = String::new();
+
+        struct LimbRawDisplay<'a>(&'a Limb);
+
+        impl<'a> std::fmt::Display for LimbRawDisplay<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                // Delegate the formatting call to `Limb::display_raw`.
+                self.0.display_raw(f)
+            }
+        }
+
+        for limb in self.0.iter().rev() {
+            write!(output_string, "{}", LimbRawDisplay(limb))?;
+        }
+
+        write!(f, "{}", output_string.trim_start_matches('0'))
+    }
 }
 
 impl std::ops::Add for Integer {
-    type Output = Self;
+    type Output = (Self, bool);
 
     fn add(self, other: Self) -> Self::Output {
         #[cfg(debug_assertions)]
@@ -372,13 +541,13 @@ impl std::ops::Add for Integer {
         {
             if self.0.is_empty() {
                 unsafe {
-                    std::hint::unreachable_unchecked();
+                    unreachable_unchecked();
                 }
             }
 
             if self.0.len() != other.0.len() {
                 unsafe {
-                    std::hint::unreachable_unchecked();
+                    unreachable_unchecked();
                 }
             }
         }
@@ -393,8 +562,8 @@ impl std::ops::Add for Integer {
         }
 
         let mut output = Integer(output_vec);
-        output.process_carries();
-        output
+        let ever_carried = output.process_carries();
+        (output, ever_carried)
     }
 }
 
@@ -427,7 +596,11 @@ impl std::cmp::PartialEq for Integer {
             }
 
             if self.0.len() != other.0.len() {
-                unreachable!("Tried to compare two integers of different lengths");
+                unreachable!(
+                    "Tried to compare two integers of different lengths, {:} vs {:}",
+                    self.0.len(),
+                    other.0.len()
+                );
             }
         }
 
@@ -435,22 +608,23 @@ impl std::cmp::PartialEq for Integer {
         {
             if self.0.is_empty() {
                 unsafe {
-                    std::hint::unreachable_unchecked();
+                    unreachable_unchecked();
                 }
             }
 
             if self.0.is_empty() {
                 unsafe {
-                    std::hint::unreachable_unchecked();
+                    unreachable_unchecked();
                 }
             }
         }
 
         for (a, b) in self.0.iter().zip(other.0.iter()) {
-            if std::hint::likely(a != b) {
+            if likely(a != b) {
                 return false;
             }
         }
+        cold_path();
         true
     }
 }
