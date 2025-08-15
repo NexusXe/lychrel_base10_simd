@@ -1,5 +1,4 @@
 use super::*;
-
 #[test]
 fn test_len_empty() {
     let limb = Limb::new();
@@ -45,7 +44,8 @@ fn test_reverse() {
         format!("{integer}"),
         "900000008000000070000000600000005000000040000000300020019999999999999999999999999999999999999999999999999999999999999999"
     );
-    let reversed_integer = integer.reverse();
+    let mut reversed_integer = Integer(Vec::new());
+    integer.reverse_into_integer(&mut reversed_integer);
     assert_eq!(
         format!("{reversed_integer}"),
         "999999999999999999999999999999999999999999999999999999999999999910020003000000040000000500000006000000070000000800000009"
@@ -63,7 +63,8 @@ fn test_reverse() {
         format!("{integer}"),
         "123456780000000012345678000000001234567800000000123456788765432100000000876543210000000087654321000000008765432100000000"
     );
-    let reversed_integer = integer.reverse();
+    let mut reversed_integer = Integer(Vec::new());
+    integer.reverse_into_integer(&mut reversed_integer);
     assert_eq!(
         format!("{reversed_integer}"),
         "1234567800000000123456780000000012345678000000001234567887654321000000008765432100000000876543210000000087654321"
@@ -144,4 +145,30 @@ fn test_integer_len() {
     let integer3 =
         integer!("1234567890123456789012345678901234567890123456789012345678901234567800000000");
     assert_eq!(integer3.len(), 76);
+}
+
+#[test]
+fn test_pack_unpack_limb() {
+    let limb1: Limb = u8x64::splat(9).into();
+    let limb2: Limb = u8x64::splat(1).into();
+    let packed = limb1.pack(limb2);
+    assert_eq!(packed, u8x64::splat(0x19).into());
+
+    let packed: Limb = u8x64::splat(0x19).into();
+    let (limb1, limb2) = packed.unpack();
+    assert_eq!(limb1, u8x64::splat(9).into());
+    assert_eq!(limb2, u8x64::splat(1).into());
+}
+
+#[test]
+fn test_pack_unpack_integer() {
+    let limb1: Limb = u8x64::splat(9).into();
+    let limb2: Limb = u8x64::splat(1).into();
+    let integer: Integer = Integer(vec![limb1, limb2]);
+    let packed = integer.pack();
+    assert_eq!(packed, Integer(vec![u8x64::splat(0x19).into()]));
+
+    let packed = Integer(vec![u8x64::splat(0x19).into()]);
+    let unpacked = packed.unpack();
+    assert_eq!(unpacked, Integer(vec![limb1, limb2]));
 }

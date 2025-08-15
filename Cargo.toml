@@ -12,12 +12,13 @@ affinity = "0.1.2"
 
 [profile.release]
 opt-level = 3
-debug = true
+debug = false
 debug-assertions=false
 overflow-checks = false
 panic = "abort"
 codegen-units = 1
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
 lto = "fat"
 
 [profile.release.package."*"]
@@ -25,14 +26,16 @@ opt-level = 3
 debug = true
 overflow-checks = false
 codegen-units = 1
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
 
 [profile.release.build-override]
 opt-level = 3
 debug = true
 overflow-checks = false
 codegen-units = 1
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+# rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode", "-C", "force-frame-pointers=yes"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-C", "embed-bitcode"]
 
 [profile.test]
 inherits = "dev"
