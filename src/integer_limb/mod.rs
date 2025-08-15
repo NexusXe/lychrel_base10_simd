@@ -108,7 +108,7 @@ impl Limb {
     fn len(&self) -> usize {
         let zero: __m512i = __m512i::from(u8x64::splat(0));
         let digit_mask = unsafe { _mm512_cmpeq_epu8_mask(self.0.into(), zero) };
-        64 - (digit_mask.leading_ones() as usize)
+        64 - digit_mask.leading_ones() as usize
     }
 
     pub(crate) fn pack(self, other: Self) -> Self {
@@ -229,13 +229,11 @@ impl Checkpoint {
 #[allow(dead_code)]
 impl Integer {
     pub(crate) fn reverse_into_integer(&self, output: &mut Integer) {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Cannot reverse an empty integer");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -253,6 +251,7 @@ impl Integer {
         let most_significant_limb: Limb = unsafe { *self.0.last().unwrap_unchecked() }; // safe because of the check at the top
         let skip_len: usize = 64 - most_significant_limb.len();
 
+        // method 1:
         // example with 4-digit limbs:
         // 123456 is represented as 6543 2100
         // reversed, we should expect 654321 which is represented as 1234 5600
@@ -261,29 +260,54 @@ impl Integer {
         // 0012 3456 0000
         // 1234 5600 00
 
+        // output_vec.push(Limb::new());
+        // let vec_beginning_ptr = output_vec.as_mut_ptr() as *mut u8;
+        // let desired_view_ptr = unsafe { (vec_beginning_ptr).add(skip_len) };
+        // if skip_len != 0 {
+        //     debug_assert_eq!(unsafe { *vec_beginning_ptr }, 0);
+        // }
+        // debug_assert_ne!(unsafe { *desired_view_ptr }, 0);
+
+        // unsafe {
+        //     std::ptr::copy_nonoverlapping(desired_view_ptr, vec_beginning_ptr, (self.0.len()) * 64);
+        // }
+
+        // method 2:
         output_vec.push(Limb::new());
 
         let vec_beginning_ptr = output_vec.as_mut_ptr() as *mut u8;
-        let desired_view_ptr = unsafe { (vec_beginning_ptr).add(skip_len) };
-        if skip_len != 0 {
-            debug_assert_eq!(unsafe { *vec_beginning_ptr }, 0);
+        let output_len_bytes = output_vec.len() * 64;
+
+        let output_slice =
+            unsafe { std::slice::from_raw_parts_mut(vec_beginning_ptr, output_len_bytes) };
+
+        debug_assert_eq!(
+            output_slice[(output_slice.len() - 64)..output_slice.len()],
+            [0; 64]
+        );
+
+        let right_bound = output_slice.len() - (64 - skip_len);
+        if !(right_bound - skip_len).is_multiple_of(64) {
+            #[cfg(debug_assertions)]
+            unreachable!("Reversal memory copy is not a multiple of 64 bytes");
+
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
         }
-        debug_assert_ne!(unsafe { *desired_view_ptr }, 0);
-        unsafe {
-            std::ptr::copy(desired_view_ptr, vec_beginning_ptr, (self.0.len()) * 64); // needs to be copied for alignment. unfortunate
-        }
+        output_slice.copy_within(skip_len..right_bound, 0);
 
         output_vec.pop();
     }
 
     pub fn has_carries(&self) -> bool {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried to check if empty integer has carries");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -299,13 +323,11 @@ impl Integer {
     }
 
     fn process_carries(&mut self) -> bool {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried to process carries in an empty integer");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -335,13 +357,11 @@ impl Integer {
     }
 
     pub(crate) fn is_palindrome(&self, other: &Self) -> bool {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried to check if an empty integer is a palindrome");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -351,13 +371,11 @@ impl Integer {
     }
 
     pub(crate) fn len(&self) -> usize {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried to get the length of an empty integer");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -367,13 +385,11 @@ impl Integer {
     }
 
     pub(crate) fn pack(self) -> Self {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried pack an empty integer");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -401,13 +417,11 @@ impl Integer {
     }
 
     pub fn unpack(self) -> Self {
-        #[cfg(debug_assertions)]
         if self.0.is_empty() {
+            #[cfg(debug_assertions)]
             unreachable!("Tried to unpack an empty integer");
-        }
 
-        #[cfg(not(debug_assertions))]
-        if self.0.is_empty() {
+            #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
             }
@@ -464,29 +478,23 @@ impl Integer {
 
     #[inline]
     pub(crate) fn add_into_self(&mut self, rhs: Self) -> bool {
-        #[cfg(debug_assertions)]
-        {
-            if self.0.is_empty() {
-                unreachable!("Tried to add an empty integer");
-            }
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to add an empty integer");
 
-            if self.0.len() != rhs.0.len() {
-                unreachable!("Tried to add two integers of different lengths");
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 
-        #[cfg(not(debug_assertions))]
-        {
-            if self.0.is_empty() {
-                unsafe {
-                    unreachable_unchecked();
-                }
-            }
+        if self.0.len() != rhs.0.len() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to add two integers of different lengths");
 
-            if self.0.len() != rhs.0.len() {
-                unsafe {
-                    unreachable_unchecked();
-                }
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 
@@ -526,29 +534,23 @@ impl std::ops::Add for Integer {
     type Output = (Self, bool);
 
     fn add(self, other: Self) -> Self::Output {
-        #[cfg(debug_assertions)]
-        {
-            if self.0.is_empty() {
-                unreachable!("Tried to add an empty integer");
-            }
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to add an empty integer");
 
-            if self.0.len() != other.0.len() {
-                unreachable!("Tried to add two integers of different lengths");
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 
-        #[cfg(not(debug_assertions))]
-        {
-            if self.0.is_empty() {
-                unsafe {
-                    unreachable_unchecked();
-                }
-            }
+        if self.0.len() != other.0.len() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to add two integers of different lengths");
 
-            if self.0.len() != other.0.len() {
-                unsafe {
-                    unreachable_unchecked();
-                }
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 
@@ -589,33 +591,27 @@ impl std::fmt::Display for Integer {
 
 impl std::cmp::PartialEq for Integer {
     fn eq(&self, other: &Self) -> bool {
-        #[cfg(debug_assertions)]
-        {
-            if self.0.is_empty() {
-                unreachable!("Tried to compare an empty integer");
-            }
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to compare an empty integer");
 
-            if self.0.len() != other.0.len() {
-                unreachable!(
-                    "Tried to compare two integers of different lengths, {:} vs {:}",
-                    self.0.len(),
-                    other.0.len()
-                );
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 
-        #[cfg(not(debug_assertions))]
-        {
-            if self.0.is_empty() {
-                unsafe {
-                    unreachable_unchecked();
-                }
-            }
+        if self.0.len() != other.0.len() {
+            #[cfg(debug_assertions)]
+            unreachable!(
+                "Tried to compare two integers of different lengths, {:} vs {:}",
+                self.0.len(),
+                other.0.len()
+            );
 
-            if self.0.is_empty() {
-                unsafe {
-                    unreachable_unchecked();
-                }
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
             }
         }
 

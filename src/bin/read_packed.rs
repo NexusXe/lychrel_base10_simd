@@ -39,7 +39,10 @@ fn main() {
             .display()
             .to_string();
         if !unrecognized_args.is_empty() {
-            eprintln!("\x1b[1;31merror\x1b[0m: unrecognized arguments: {:?}", unrecognized_args);
+            eprintln!(
+                "\x1b[1;31merror\x1b[0m: unrecognized arguments: {:?}",
+                unrecognized_args
+            );
         }
         eprintln!("Usage: {} [options] <file_path> [outfile]", executed_path);
         return;
