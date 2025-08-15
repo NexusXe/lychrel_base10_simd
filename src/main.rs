@@ -3,6 +3,7 @@
 #![feature(const_trait_impl)]
 #![feature(likely_unlikely)]
 #![feature(cold_path)]
+#![feature(slice_from_ptr_range)]
 
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};

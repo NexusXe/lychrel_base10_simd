@@ -3,7 +3,13 @@ use super::*;
 #[test]
 fn test_iterate() {
     let starting_integer = integer!("196");
-    let limit: usize = 501;
+
+    let limit = 2;
+    let result = crate::iterate(1..limit, starting_integer.clone());
+    assert_eq!(result.last_iteration, limit);
+    assert_eq!(result.end_integer, integer!("887"));
+
+    let limit = 501;
 
     let result = crate::iterate(1..limit, starting_integer);
     assert_eq!(result.last_iteration, limit);

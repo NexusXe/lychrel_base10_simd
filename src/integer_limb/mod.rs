@@ -291,7 +291,6 @@ impl Integer {
             #[cfg(debug_assertions)]
             unreachable!("Reversal memory copy is not a multiple of 64 bytes");
 
-
             #[cfg(not(debug_assertions))]
             unsafe {
                 unreachable_unchecked();
@@ -299,7 +298,9 @@ impl Integer {
         }
         output_slice.copy_within(skip_len..right_bound, 0);
 
-        output_vec.pop();
+        let discarded = output_vec.pop();
+        debug_assert_eq!(Limb::new(), discarded.unwrap());
+
     }
 
     pub fn has_carries(&self) -> bool {
@@ -604,7 +605,8 @@ impl std::cmp::PartialEq for Integer {
         if self.0.len() != other.0.len() {
             #[cfg(debug_assertions)]
             unreachable!(
-                "Tried to compare two integers of different lengths, {:} vs {:}",
+                "Tried to compare two integers of different lengths, {:} vs {:}:
+                {self:?}\n{other:?}",
                 self.0.len(),
                 other.0.len()
             );
