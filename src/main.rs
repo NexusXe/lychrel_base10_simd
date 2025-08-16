@@ -49,8 +49,8 @@ pub(crate) fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) 
         }
         let reverse_scrap = reverse.clone();
         carried = current_iteration.add_into_self(reverse_scrap);
-        const STEP_SIZE: usize = 2usize.pow(12);
-        const ACC_LIMIT: u8 = 64;
+        const STEP_SIZE: usize = 2usize.pow(14);
+        const ACC_LIMIT: u8 = 16;
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
             acc += 1;
 
