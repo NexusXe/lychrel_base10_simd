@@ -7,4 +7,5 @@ checkpoint_*.bin
 !.cargo
 *.txt
 
+checkpoints
 checkpoints/
