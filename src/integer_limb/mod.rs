@@ -3,6 +3,7 @@ use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
+use std::intrinsics::const_eval_select;
 use std::simd::prelude::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
@@ -11,33 +12,60 @@ use std::simd::prelude::*;
 #[derive(Clone, Copy)]
 pub(crate) struct Limb(pub(crate) u8x64);
 
-impl std::cmp::PartialEq for Limb {
+impl const std::cmp::PartialEq for Limb {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        const fn eq_const(lhs: u8x64, rhs: u8x64) -> bool {
+            use std::mem::transmute;
+            let arr1 = lhs.to_array();
+            let arr2 = rhs.to_array();
+            let arr1_64b: [u64; 8] = unsafe { transmute(arr1) };
+            let arr2_64b: [u64; 8] = unsafe { transmute(arr2) };
+            let mut i: usize = 8;
+            while i > 0 {
+                if arr1_64b[i] != arr2_64b[i] {
+                    return false;
+                } else {
+                    i -= 1;
+                }
+            }
+            false
+        }
+
+        fn eq_rt(lhs: u8x64, rhs: u8x64) -> bool {
+            lhs == rhs
+        }
+
+        const_eval_select((self.0, other.0), eq_const, eq_rt)
     }
 }
+
+
 
 impl std::cmp::Eq for Limb {}
 
 impl From<Limb> for __m512i {
+    #[inline]
     fn from(val: Limb) -> Self {
         val.0.into()
     }
 }
 
 impl const From<Limb> for u8x64 {
+    #[inline]
     fn from(val: Limb) -> Self {
         val.0
     }
 }
 
 impl From<__m512i> for Limb {
+    #[inline]
     fn from(val: __m512i) -> Self {
         Limb(val.into())
     }
 }
 
 impl const From<u8x64> for Limb {
+    #[inline]
     fn from(val: u8x64) -> Self {
         Limb(val)
     }
@@ -45,6 +73,7 @@ impl const From<u8x64> for Limb {
 
 #[allow(dead_code)]
 impl Limb {
+    #[inline]
     const fn new() -> Self {
         Limb(u8x64::splat(0))
     }
@@ -62,6 +91,7 @@ impl Limb {
         Limb(digits)
     }
 
+    #[inline]
     fn has_carries(&self) -> bool {
         let self_vector: __m512i = (*self).into();
         let compare: __m512i = __m512i::from(u8x64::splat(10));
@@ -69,9 +99,10 @@ impl Limb {
         carries != 0
     }
 
-    fn process_carries(self) -> (Self, bool) {
+    #[inline]
+    fn process_carries(&self) -> (Self, bool) {
         if !self.has_carries() {
-            return (self, false);
+            return (*self, false);
         }
 
         const ONE_VEC: u8x64 = u8x64::splat(1);
@@ -100,18 +131,20 @@ impl Limb {
         (digits.into(), carries_past_last)
     }
 
+    #[inline]
     fn reverse(self) -> Self {
         let self_u8x64: u8x64 = self.into();
         self_u8x64.reverse().into()
     }
 
+    #[inline]
     fn len(&self) -> usize {
         let zero: __m512i = __m512i::from(u8x64::splat(0));
         let digit_mask = unsafe { _mm512_cmpeq_epu8_mask(self.0.into(), zero) };
         64 - digit_mask.leading_ones() as usize
     }
 
-    pub(crate) fn pack(self, other: Self) -> Self {
+    fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
 
@@ -129,7 +162,7 @@ impl Limb {
         unsafe { _mm512_or_epi64(self_vector, other_shifted) }.into()
     }
 
-    pub(crate) fn unpack(self) -> (Self, Self) {
+    fn unpack(self) -> (Self, Self) {
         let self_vector: __m512i = self.into();
         let high_bytes: __m512i = u8x64::splat(0xF0).into();
         let low_bytes: __m512i = u8x64::splat(0x0F).into();
@@ -152,7 +185,7 @@ impl Limb {
     }
 
     #[inline]
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         let zero: Limb = Limb(u8x64::splat(0));
         self == &zero
     }
@@ -177,7 +210,8 @@ impl std::ops::Add for Limb {
 
     fn add(self, other: Self) -> Self::Output {
         //unsafe { _mm512_add_epi8(self.into(), other.into()) }.into()
-        Limb(self.0 + other.0) // should compile to be the same
+        //Limb(self.0 + other.0) // should compile to be the same
+        unsafe { _mm512_add_epi64(self.into(), other.into()) }.into() // actually is probably faster because each number will never overflow its byte boundary
     }
 }
 
@@ -207,6 +241,7 @@ impl std::fmt::Debug for Limb {
 }
 
 #[derive(Clone)]
+//#[repr(align(64))]
 pub struct Integer(pub(crate) Vec<Limb>);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -228,10 +263,11 @@ impl Checkpoint {
 
 #[allow(dead_code)]
 impl Integer {
+    #[inline]
     pub(crate) fn reverse_into_integer(&self, output: &mut Integer) {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
-            unreachable!("Cannot reverse an empty integer");
+            unreachable!("Tried to reverse an empty integer");
 
             #[cfg(not(debug_assertions))]
             unsafe {
@@ -248,8 +284,8 @@ impl Integer {
         // at this point, the contents of the limbs and the order of the limbs are reversed
         // however, the digits are misaligned
 
-        let most_significant_limb: Limb = unsafe { *self.0.last().unwrap_unchecked() }; // safe because of the check at the top
-        let skip_len: usize = 64 - most_significant_limb.len();
+        // safe because of the check at the top
+        let skip_len: usize = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
 
         // method 1:
         // example with 4-digit limbs:
@@ -300,9 +336,49 @@ impl Integer {
 
         let discarded = output_vec.pop();
         debug_assert_eq!(Limb::new(), discarded.unwrap());
-
     }
 
+    pub(crate) fn fused_reverse_add(&mut self) -> bool {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to reverse and add empty integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        struct SpilloverDigits {
+            data: u8x64,
+            len: usize
+        }
+
+        impl Iterator for SpilloverDigits {
+            type Item = u8;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.len == 0 {
+                    return None;
+                }
+                self.len -= 1;
+                Some(self.data[self.len])
+            }
+        }
+
+        let msl_digits: usize = unsafe { self.0.last().unwrap_unchecked() }.len();
+        let spillover_length: usize = 64 - msl_digits;
+        
+        debug_assert_ne!(msl_digits, 0, "Most significant limb is empty");
+
+
+
+
+
+        todo!()
+    }
+
+    #[inline]
     pub fn has_carries(&self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -323,6 +399,7 @@ impl Integer {
         false
     }
 
+    #[inline]
     fn process_carries(&mut self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -371,6 +448,7 @@ impl Integer {
         self == other
     }
 
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -478,7 +556,7 @@ impl Integer {
     }
 
     #[inline]
-    pub(crate) fn add_into_self(&mut self, rhs: Self) -> bool {
+    pub(crate) fn add_into_self(&mut self, rhs: &Self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to add an empty integer");

@@ -4,12 +4,17 @@
 #![feature(likely_unlikely)]
 #![feature(cold_path)]
 #![feature(slice_from_ptr_range)]
+#![feature(int_roundings)]
+#![feature(const_cmp)]
+#![feature(const_eval_select)]
+#![feature(core_intrinsics)]
+#![allow(internal_features)]
 
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
 use std::hint::{cold_path, likely, unlikely};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::simd::prelude::*;
 use std::thread;
 use std::time::Instant;
@@ -24,9 +29,7 @@ const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
-pub(crate) fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> IterationResult {
-    let checkpoint_suffix = format!("{INITIAL_SEED:}_checkpoint");
-
+fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> IterationResult {
     let mut current_iteration: Integer = starting_integer;
     let mut reverse: Integer = Integer(Vec::<Limb>::new());
 
@@ -47,8 +50,8 @@ pub(crate) fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) 
             cold_path();
             break;
         }
-        let reverse_scrap = reverse.clone();
-        carried = current_iteration.add_into_self(reverse_scrap);
+
+        carried = current_iteration.add_into_self(&reverse);
         const STEP_SIZE: usize = 2usize.pow(14);
         const ACC_LIMIT: u8 = 16;
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
@@ -64,32 +67,59 @@ pub(crate) fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) 
                 cold_path();
                 acc = 0;
 
-                let checkpoint_path = checkpoint_path.join(format!("{i}.{}", &checkpoint_suffix));
+                let checkpoint_path =
+                    checkpoint_path.join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
+
                 let current_iteration_cloned = current_iteration.clone();
                 thread::spawn(move || {
+                    println!(
+                        "Reached checkpoint: {}",
+                        unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
+                    );
                     let checkpoint = current_iteration_cloned.into_checkpoint(i);
                     if checkpoint_path.exists() && checkpoint_path.is_file() {
                         print!("Checkpoint already exists; validating... ");
                         // read the file
-                        let mut file = std::fs::File::open(checkpoint_path).unwrap();
+                        let mut file = match std::fs::File::open(checkpoint_path) {
+                            Ok(file) => file,
+                            Err(_) => {
+                                eprintln!("UNABLE TO OPEN FILE");
+                                eprintln!("Continuing anyway...");
+                                return;
+                            }
+                        };
                         let mut buffer = Vec::new();
-                        file.read_to_end(&mut buffer).unwrap();
-                        let read_checkpoint = Checkpoint::new(i, buffer);
-                        if read_checkpoint == checkpoint {
-                            println!("OK");
-                        } else {
-                            println!("FAILED");
+                        match file.read_to_end(&mut buffer) {
+                            Ok(_) => {
+                                let read_checkpoint = Checkpoint::new(i, buffer);
+                                if read_checkpoint == checkpoint {
+                                    println!("OK");
+                                } else {
+                                    println!("FAILED");
 
-                            eprintln!("Checkpoint validation failed at checkpoint {i:}");
-                            std::process::exit(1)
+                                    eprintln!("Checkpoint validation failed at checkpoint {i:}");
+                                    std::process::exit(1)
+                                }
+                            }
+                            Err(_) => {
+                                eprintln!("UNABLE TO READ FILE");
+                                eprintln!("Continuing anyway...")
+                            }
                         }
                     } else {
                         print!("Writing checkpoint to {}... ", checkpoint_path.display());
                         let data = checkpoint.data().1;
                         let data_length = data.len();
-                        std::fs::write(checkpoint_path, data).unwrap();
-                        println!("OK");
-                        println!("Wrote {:} KiB", data_length / 1024);
+                        match std::fs::write(checkpoint_path, data) {
+                            Ok(_) => {
+                                println!("OK");
+                                println!("Wrote {:} KiB", data_length / 1024);
+                            }
+                            Err(e) => {
+                                eprintln!("FAILED: {e}");
+                                std::process::exit(1);
+                            }
+                        }
                     }
                 });
 
@@ -116,10 +146,15 @@ pub(crate) fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) 
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //const LIMIT: usize = 603_567;
+    const LIMIT_SHORT: usize = 603_567;
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
-    const LIMIT: usize = u32::MAX as usize;
+    const LIMIT: usize = usize::MAX;
+
+    //let compile_datetime = compile_time::datetime_str!();
+    //let rustc_version = compile_time::rustc_version_str!();
+
+    //eprintln!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
@@ -147,25 +182,70 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 checkpoint_files.sort_unstable_by_key(|path| {
                     path.file_name()
                         .and_then(|s| s.to_str())
-                        .and_then(|s| s.split('.').next()) // Get the first part before '.'
+                        .and_then(|s| s.split('.').next())
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap()
                 });
 
-                if checkpoint_files.len() >= 2 {
+                let checkpoint_path: Option<PathBuf> = if args.contains(&"--start-at".to_string()) {
+                    // get the arg after "--start-at"
+                    let start_at_index = match args.iter().position(|arg| arg == "--start-at") {
+                        Some(index) => index,
+                        None => {
+                            eprintln!("Please specify the checkpoint index to start at");
+                            std::process::exit(1);
+                        }
+                    };
+                    let start_at_value = match args[start_at_index + 1].parse::<usize>() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            eprintln!("Please specify a valid checkpoint index to start at");
+                            std::process::exit(1);
+                        }
+                    };
+
+                    // find the checkpoint that starts with `start_at_value`
+                    Some(
+                        match checkpoint_files.into_iter().find(|path| {
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .and_then(|s| s.split('.').next())
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .is_some_and(|i| i == start_at_value)
+                        }) {
+                            Some(path) => path,
+                            None => {
+                                eprintln!("No checkpoint found with index {start_at_value:}");
+                                std::process::exit(1);
+                            }
+                        },
+                    )
+                } else if checkpoint_files.len() >= 2 {
                     // use the second to last checkpoint
-                    let used_checkpoint_path = &checkpoint_files[checkpoint_files.len() - 2];
-                    let used_checkpoint_iteration = used_checkpoint_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .and_then(|s| s.split('.').next())
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap();
-                    let used_checkpoint = std::fs::read(used_checkpoint_path)?;
-                    let checkpoint = Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
-                    (initial_value, starting_iteration) = Integer::from_checkpoint(checkpoint);
-                    println!("Starting from checkpoint at iteration {starting_iteration:}");
-                    starting_iteration += 1;
+                    Some(checkpoint_files[checkpoint_files.len() - 2].clone())
+                } else {
+                    None
+                };
+
+                match checkpoint_path {
+                    Some(used_checkpoint_path) => {
+                        let used_checkpoint_iteration = used_checkpoint_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .and_then(|s| s.split('.').next())
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap();
+                        let used_checkpoint = std::fs::read(used_checkpoint_path)?;
+                        let checkpoint =
+                            Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
+                        (initial_value, starting_iteration) = Integer::from_checkpoint(checkpoint);
+                        println!("Starting from checkpoint at iteration {starting_iteration:}");
+                        starting_iteration += 1;
+                    }
+
+                    None => {
+                        eprintln!("No valid checkpoints to start from found.")
+                    }
                 }
             }
             Err(_) => {
@@ -180,11 +260,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Not starting from checkpoint.");
     }
 
-    let result = iterate(starting_iteration..LIMIT, initial_value);
+    let limit: usize = if args.contains(&"--short".to_string()) {
+        eprintln!("Performing short run.");
+        LIMIT_SHORT * 3
+    } else if args.contains(&"--bench".to_string()) {
+        eprintln!("Performing benchmark run.");
+        LIMIT_SHORT
+    } else {
+        LIMIT
+    };
+
+    let result = iterate(starting_iteration..limit, initial_value);
     let (last_iteration, start_time, end_integer) =
         (result.last_iteration, result.start_time, result.end_integer);
 
-    let found_palindrome: bool = last_iteration < LIMIT;
+    let found_palindrome: bool = last_iteration < limit;
 
     let elapsed_time = start_time.elapsed();
 

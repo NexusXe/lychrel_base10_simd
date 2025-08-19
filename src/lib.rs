@@ -4,5 +4,10 @@
 #![feature(likely_unlikely)]
 #![feature(cold_path)]
 #![feature(slice_from_ptr_range)]
+#![feature(int_roundings)]
+#![feature(const_cmp)]
+#![feature(const_eval_select)]
+#![feature(core_intrinsics)]
+#![allow(internal_features)]
 
 pub mod integer_limb;

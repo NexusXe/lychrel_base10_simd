@@ -5,6 +5,6 @@ checkpoint_*.bin
 .*
 !.gitignore
 !.cargo
-
+*.txt
 
 checkpoints/

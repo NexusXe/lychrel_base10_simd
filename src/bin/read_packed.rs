@@ -44,7 +44,7 @@ fn main() {
                 unrecognized_args
             );
         }
-        eprintln!("Usage: {} [options] <file_path> [outfile]", executed_path);
+        eprintln!("Usage: {} [options] <file_path>", executed_path);
         return;
     }
 
