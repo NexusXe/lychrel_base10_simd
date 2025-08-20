@@ -39,8 +39,6 @@ impl const std::cmp::PartialEq for Limb {
     }
 }
 
-
-
 impl std::cmp::Eq for Limb {}
 
 impl From<Limb> for __m512i {
@@ -351,7 +349,7 @@ impl Integer {
 
         struct SpilloverDigits {
             data: u8x64,
-            len: usize
+            len: usize,
         }
 
         impl Iterator for SpilloverDigits {
@@ -368,12 +366,8 @@ impl Integer {
 
         let msl_digits: usize = unsafe { self.0.last().unwrap_unchecked() }.len();
         let spillover_length: usize = 64 - msl_digits;
-        
+
         debug_assert_ne!(msl_digits, 0, "Most significant limb is empty");
-
-
-
-
 
         todo!()
     }
@@ -391,8 +385,6 @@ impl Integer {
 
         let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
 
-
-
         let mut reversed_limbs: Vec<u8x64> = self.0.iter().rev().map(|s| s.0.reverse()).collect();
 
         if self.0.len() != reversed_limbs.len() {
@@ -405,18 +397,22 @@ impl Integer {
 
         let ten_vector: __m512i = u8x64::splat(10).into();
         let one_vector: __m512i = u8x64::splat(1).into();
-        let one_mask: __mmask8 = 1u8;
 
-        
-        let mut ever_carried_byte: u64 = 0;
-        let mut overflowed: u8 = 0;
+        let mut ever_carried_byte: u8 = 0;
+        let mut overflowed: u64 = 0;
 
-        for (limb, rev_limb) in self.0.iter_mut().zip(reversed_limbs[..reversed_limbs.len() - 1].iter()) {
+        for (limb, rev_limb) in self
+            .0
+            .iter_mut()
+            .zip(reversed_limbs[..reversed_limbs.len() - 1].iter())
+        {
             let rev_ptr = rev_limb as *const u8x64;
             unsafe {
+                let carry_mask_kreg: u64;
                 std::arch::asm!(
                     r#"
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
+                    # vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
                     kxorq {overflowed}, {overflowed}, {overflowed} # clear overflowed
                     kxorq {carry_mask_kreg}, {carry_mask_kreg}, {carry_mask_kreg} # clear carry_mask_kreg
                     vpaddb {limb}, {limb}, [{0} + rcx] # add the vectors together
@@ -427,6 +423,7 @@ impl Integer {
 
                     test {carry_tmp:r}, {carry_tmp:r} # see if carry_tmp is zero
                     jz 3f # if there are no carries, we are done
+
 
                     shl {carry_tmp:r}, cl # cl contains `skip_len`
                     mov {ever_carried}, 1 # since there are carries, set ever_carried
@@ -441,6 +438,9 @@ impl Integer {
                     kortestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
                     jnz 2b # if it wasn't, loop again
 
+                    4:
+                    ud2
+                    
                     3: # done
                     "#,
                     in(reg) rev_ptr,
@@ -449,11 +449,12 @@ impl Integer {
                     overflowed = inout(kreg) overflowed,
                     one_zmm = in(zmm_reg) one_vector,
                     ten_zmm = in(zmm_reg) ten_vector,
-                    carry_mask_kreg = out(kreg) _,
+                    carry_mask_kreg = out(kreg) carry_mask_kreg,
                     carry_tmp = out(reg) _,
-                    ever_carried = inout(reg) ever_carried_byte,
-                    options(nostack),
+                    ever_carried = inout(reg_byte) ever_carried_byte,
+                    //options(nostack),
                 );
+                dbg!(carry_mask_kreg);
             }
         }
 
@@ -464,9 +465,69 @@ impl Integer {
                 Limb(u8x64::from_array(arr))
             });
         };
+        unsafe {
+            std::arch::asm!("sfence");
+        }
         ever_carried_byte != 0
     }
 
+    pub(crate) fn show_differences(&self, rhs: &Self) -> String {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to show differences between empty integers");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        if self.0.len() != rhs.0.len() {
+            #[cfg(debug_assertions)]
+            unreachable!(
+                "Tried to show differences between integers of different lengths, {:} vs {:}:
+                {self:?}\n{rhs:?}",
+                self.0.len(),
+                rhs.0.len()
+            );
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let mut self_string: String = String::new();
+        let mut other_string: String = String::new();
+
+        writeln!(self_string, "Left Integer:").unwrap();
+        writeln!(other_string, "Right Integer:").unwrap();
+
+        for (self_limb, other_limb) in self.0.iter().zip(rhs.0.iter()) {
+            write!(self_string, "[").unwrap();
+            write!(other_string, "[").unwrap();
+            for (self_digit, other_digit) in self_limb
+                .0
+                .as_array()
+                .iter()
+                .zip(other_limb.0.as_array().iter())
+            {
+                if self_digit != other_digit {
+                    write!(self_string, "\x1b[31m{self_digit}\x1b[0m").unwrap();
+                    write!(other_string, "\x1b[31m{other_digit}\x1b[0m").unwrap();
+                } else {
+                    write!(self_string, "{self_digit}").unwrap();
+                    write!(other_string, "{other_digit}").unwrap();
+                }
+            }
+            writeln!(self_string, "]").unwrap();
+            writeln!(other_string, "]").unwrap();
+        }
+
+        let mut output_string = String::with_capacity(self_string.len() + other_string.len());
+        write!(output_string, "{}\n{}", self_string, other_string).unwrap();
+        output_string
+    }
 
     #[inline]
     pub fn has_carries(&self) -> bool {

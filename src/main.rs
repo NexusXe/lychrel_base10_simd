@@ -34,7 +34,6 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
     let mut reverse: Integer = Integer(Vec::<Limb>::new());
 
     reverse.0.reserve(current_iteration.0.len());
-    current_iteration.reverse_into_integer(&mut reverse);
 
     let mut carried: bool = false;
     let mut i: usize = range.start;
@@ -46,12 +45,22 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
     let mut step_time = Instant::now();
 
     while likely(i < range.end) {
-        if unlikely(unlikely(!carried) && unlikely(current_iteration.0 == reverse.0)) {
-            cold_path();
-            break;
+        if unlikely(!carried) {
+            reverse.0.reserve(
+                current_iteration
+                    .0
+                    .len()
+                    .saturating_sub((reverse).0.capacity()),
+            );
+            current_iteration.reverse_into_integer(&mut reverse);
+            if current_iteration.0 == reverse.0 {
+                cold_path();
+                break;
+            }
         }
 
-        carried = current_iteration.add_into_self(&reverse);
+        carried = current_iteration.fused_reverse_add_asm();
+
         const STEP_SIZE: usize = 2usize.pow(14);
         const ACC_LIMIT: u8 = 16;
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
@@ -134,7 +143,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
             }
         }
 
-        current_iteration.reverse_into_integer(&mut reverse);
+        //current_iteration.reverse_into_integer(&mut reverse);
 
         i += 1;
     }
