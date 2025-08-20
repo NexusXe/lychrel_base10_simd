@@ -47,7 +47,7 @@ overflow-checks = true
 debug-assertions = true
 lto = false
 rustflags = ["-C", "force-frame-pointers=yes"]
-panic = "abort"
+
 
 [profile.test]
 inherits = "dev"

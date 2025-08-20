@@ -378,6 +378,96 @@ impl Integer {
         todo!()
     }
 
+    pub fn fused_reverse_add_asm(&mut self) -> bool {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to reverse and add empty integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+
+
+
+        let mut reversed_limbs: Vec<u8x64> = self.0.iter().rev().map(|s| s.0.reverse()).collect();
+
+        if self.0.len() != reversed_limbs.len() {
+            unsafe {
+                std::hint::unreachable_unchecked();
+            }
+        }
+
+        reversed_limbs.push(u8x64::splat(0));
+
+        let ten_vector: __m512i = u8x64::splat(10).into();
+        let one_vector: __m512i = u8x64::splat(1).into();
+        let one_mask: __mmask8 = 1u8;
+
+        
+        let mut ever_carried_byte: u64 = 0;
+        let mut overflowed: u8 = 0;
+
+        for (limb, rev_limb) in self.0.iter_mut().zip(reversed_limbs[..reversed_limbs.len() - 1].iter()) {
+            let rev_ptr = rev_limb as *const u8x64;
+            unsafe {
+                std::arch::asm!(
+                    r#"
+                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
+                    kxorq {overflowed}, {overflowed}, {overflowed} # clear overflowed
+                    kxorq {carry_mask_kreg}, {carry_mask_kreg}, {carry_mask_kreg} # clear carry_mask_kreg
+                    vpaddb {limb}, {limb}, [{0} + rcx] # add the vectors together
+
+                    2: # carry processing loop
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10
+                    kmovq {carry_tmp:r}, {carry_mask_kreg}
+
+                    test {carry_tmp:r}, {carry_tmp:r} # see if carry_tmp is zero
+                    jz 3f # if there are no carries, we are done
+
+                    shl {carry_tmp:r}, cl # cl contains `skip_len`
+                    mov {ever_carried}, 1 # since there are carries, set ever_carried
+                    and {carry_tmp:r}, 1 # only keep overflow bit
+                    mov {carry_tmp:r}, 0 # clear the rest of the register w/o touching flags
+                    setnz {carry_tmp:l} # not zero = overflow bit set
+                    kmovb {overflowed}, {carry_tmp:e} # "store" in overflowed for next limb
+
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm} # subtract 10 from those that triggered carries
+                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm}
+                    kortestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
+                    jnz 2b # if it wasn't, loop again
+
+                    3: # done
+                    "#,
+                    in(reg) rev_ptr,
+                    in("rcx") skip_len, // use rcx so that `skip_len` is also in `cl` for `shl`
+                    limb = inout(zmm_reg) limb.0,
+                    overflowed = inout(kreg) overflowed,
+                    one_zmm = in(zmm_reg) one_vector,
+                    ten_zmm = in(zmm_reg) ten_vector,
+                    carry_mask_kreg = out(kreg) _,
+                    carry_tmp = out(reg) _,
+                    ever_carried = inout(reg) ever_carried_byte,
+                    options(nostack),
+                );
+            }
+        }
+
+        if overflowed != 0 {
+            self.0.push({
+                let mut arr = [0u8; 64];
+                arr[0] = 1;
+                Limb(u8x64::from_array(arr))
+            });
+        };
+        ever_carried_byte != 0
+    }
+
+
     #[inline]
     pub fn has_carries(&self) -> bool {
         if self.0.is_empty() {

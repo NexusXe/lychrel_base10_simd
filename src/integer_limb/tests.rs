@@ -302,3 +302,28 @@ fn test_write_and_read_checkpoint() {
     assert_eq!(integer, integer_read.clone().unpack());
     assert!(!integer_read.clone().unpack().has_carries());
 }
+
+#[test]
+fn test_fused_reverse_add_asm() {
+    let mut integer1 = integer!("12345678");
+    let ever_carried = integer1.fused_reverse_add_asm();
+    assert_eq!(integer1, integer!("99999999"));
+    assert!(!ever_carried);
+
+    let mut integer2 = integer!("99999999");
+    let ever_carried = integer2.fused_reverse_add_asm();
+    assert_eq!(integer2, integer!("199999998"));
+    assert!(ever_carried);
+
+    let mut integer3 = integer!("11111111111111111111111111111111");
+    let ever_carried = integer3.fused_reverse_add_asm();
+    assert_eq!(integer3, integer!("22222222222222222222222222222222"));
+    assert!(!ever_carried);
+
+    let mut integer3: Integer = Integer(vec![Limb(u8x64::splat(9))]);
+    let ever_carried = integer3.fused_reverse_add_asm();
+    assert_eq!(integer3, integer!("19999999999999999999999999999999999999999999999999999999999999998"));
+    assert!(ever_carried);
+
+
+}
