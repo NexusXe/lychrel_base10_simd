@@ -336,7 +336,8 @@ impl Integer {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    pub(crate) fn fused_reverse_add(&mut self) -> bool {
+    #[allow(unused_variables)]
+    fn fused_reverse_add(&mut self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse and add empty integer");
@@ -372,6 +373,7 @@ impl Integer {
         todo!()
     }
 
+    #[inline]
     pub fn fused_reverse_add_asm(&mut self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -401,73 +403,72 @@ impl Integer {
         let mut ever_carried_byte: u8 = 0;
         let mut overflowed: u64 = 0;
 
+        const ONE_LIMB: Limb = Limb({
+            let mut arr = [0u8; 64];
+            arr[0] = 1;
+            u8x64::from_array(arr)
+        });
+
         for (limb, rev_limb) in self
             .0
             .iter_mut()
             .zip(reversed_limbs[..reversed_limbs.len() - 1].iter())
         {
             let rev_ptr = rev_limb as *const u8x64;
+
             unsafe {
-                let carry_mask_kreg: u64;
+                let carry_mask: u64;
                 std::arch::asm!(
                     r#"
+                    # use overflowed as a writemask so we can reuse one_zmm
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
-                    # vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
                     kxorq {overflowed}, {overflowed}, {overflowed} # clear overflowed
-                    kxorq {carry_mask_kreg}, {carry_mask_kreg}, {carry_mask_kreg} # clear carry_mask_kreg
+
+                    # kxorq {carry_mask_kreg}, {carry_mask_kreg}, {carry_mask_kreg} # clear carry_mask_kreg
+                    # knotq {carry_mask_kreg}, {carry_mask_kreg} # invert carry_mask_kreg the first time
+                    kxorq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
                     vpaddb {limb}, {limb}, [{0} + rcx] # add the vectors together
 
                     2: # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10
-                    kmovq {carry_tmp:r}, {carry_mask_kreg}
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10 and store them in carry_mask_kreg
+                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg} # copy carry_mask_kreg to carry_mask_preserved
 
-                    test {carry_tmp:r}, {carry_tmp:r} # see if carry_tmp is zero
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if carry_tmp is zero
+
                     jz 3f # if there are no carries, we are done
-
-
-                    shl {carry_tmp:r}, cl # cl contains `skip_len`
                     mov {ever_carried}, 1 # since there are carries, set ever_carried
-                    and {carry_tmp:r}, 1 # only keep overflow bit
-                    mov {carry_tmp:r}, 0 # clear the rest of the register w/o touching flags
-                    setnz {carry_tmp:l} # not zero = overflow bit set
-                    kmovb {overflowed}, {carry_tmp:e} # "store" in overflowed for next limb
 
                     vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm} # subtract 10 from those that triggered carries
-                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm}
-                    kortestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
-                    jnz 2b # if it wasn't, loop again
-
-                    4:
-                    ud2
+                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1 # shift the mask left to use for carry propogation
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm} # propogate the carries
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
+                    jnz 2b # if it wasn't, loop again because there might be new carries to process
                     
                     3: # done
                     "#,
-                    in(reg) rev_ptr,
+                    in(reg) rev_ptr, // pointer to the reversed limb
+                    // using a pointer lets us avoid loading it manually, since
+                    // `vpaddb` can just take a memory address as an input
                     in("rcx") skip_len, // use rcx so that `skip_len` is also in `cl` for `shl`
-                    limb = inout(zmm_reg) limb.0,
-                    overflowed = inout(kreg) overflowed,
-                    one_zmm = in(zmm_reg) one_vector,
-                    ten_zmm = in(zmm_reg) ten_vector,
-                    carry_mask_kreg = out(kreg) carry_mask_kreg,
-                    carry_tmp = out(reg) _,
-                    ever_carried = inout(reg_byte) ever_carried_byte,
-                    //options(nostack),
+                    limb = inout(zmm_reg) limb.0, // the limb that is getting modified
+                    overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
+                    one_zmm = in(zmm_reg) one_vector, // a vector of 1s
+                    ten_zmm = in(zmm_reg) ten_vector, // a vector of 10s
+                    carry_mask_kreg = out(kreg) _, // tmp kreg for carry processing
+                    carry_mask_preserved = out(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
+                    ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
                 );
-                dbg!(carry_mask_kreg);
+                if carry_mask & 0x8000000000000000u64 != 0 {
+                    overflowed = 1;
+                } else {
+                    overflowed = 0;
+                }
             }
         }
 
         if overflowed != 0 {
-            self.0.push({
-                let mut arr = [0u8; 64];
-                arr[0] = 1;
-                Limb(u8x64::from_array(arr))
-            });
+            self.0.push(ONE_LIMB);
         };
-        unsafe {
-            std::arch::asm!("sfence");
-        }
         ever_carried_byte != 0
     }
 

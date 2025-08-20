@@ -304,6 +304,31 @@ fn test_write_and_read_checkpoint() {
 }
 
 #[test]
+fn test_fused_reverse_add_asm_simple() {
+    let mut integer = integer!("196");
+    let ever_carried = integer.fused_reverse_add_asm();
+    assert_eq!(integer, integer!("887"));
+    assert!(ever_carried);
+}
+
+#[test]
+fn test_fused_reverse_add_asm_simple_2() {
+    let mut integer = Integer(vec![Limb({
+        let mut arr = [0u8; 64];
+        arr[0] = 5;
+        arr[63] = 6;
+        u8x64::from(arr)
+    })]);
+
+    let ever_carried = integer.fused_reverse_add_asm();
+    assert_eq!(
+        integer,
+        integer!("11000000000000000000000000000000000000000000000000000000000000011")
+    );
+    assert!(ever_carried);
+}
+
+#[test]
 fn test_fused_reverse_add_asm() {
     let mut integer1 = integer!("12345678");
     let ever_carried = integer1.fused_reverse_add_asm();
@@ -345,4 +370,47 @@ fn test_asm_bug() {
         integer4.show_differences(&expected)
     );
     assert!(ever_carried);
+}
+
+#[test]
+fn test_asm_random() {
+    fn test_with_rng(rng: &mut SmallRng, boundary: bool) {
+        let mut length = rng.random_range(1_000usize..=1_000_000usize);
+
+        if boundary {
+            const MASK: usize = !63;
+            length &= MASK;
+        }
+
+        // generate a random string with `length` random digits
+        let mut random_string = String::with_capacity(length);
+        for _ in 0..length {
+            let random_digit_char: char = rng.random_range('0'..='9');
+            random_string.push(random_digit_char);
+        }
+
+        // if the first character in the string is 0, regenerate just that digit
+        if random_string.starts_with('0') {
+            let random_digit_char_nonzero: char = rng.random_range('1'..='9');
+            random_string.remove(0);
+            random_string.insert(0, random_digit_char_nonzero);
+        }
+
+        let mut integer1 = integer!(&random_string);
+        let mut reversed_integer = Integer(Vec::with_capacity(integer1.0.len()));
+        integer1.reverse_into_integer(&mut reversed_integer);
+
+        let (known_correct_result, known_correct_carried): (Integer, bool) = integer1.clone() + reversed_integer;
+
+        let asm_carried = integer1.fused_reverse_add_asm();
+
+        assert_eq!(integer1, known_correct_result);
+        assert_eq!(asm_carried, known_correct_carried);
+    }
+
+    let mut rng = SmallRng::seed_from_u64(0xdeadbeef);
+    for _ in 0..256 {
+        test_with_rng(&mut rng, false);
+        test_with_rng(&mut rng, true);
+    }
 }

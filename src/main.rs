@@ -46,6 +46,8 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
 
     while likely(i < range.end) {
         if unlikely(!carried) {
+            cold_path();
+            eprintln!("deep checking palindrome");
             reverse.0.reserve(
                 current_iteration
                     .0
