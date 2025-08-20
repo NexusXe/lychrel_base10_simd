@@ -51,8 +51,8 @@ rustflags = ["-C", "force-frame-pointers=yes"]
 
 [profile.test]
 inherits = "dev"
-opt-level = 2
+opt-level = 3
 overflow-checks = true
 debug-assertions = true
-lto = "thin"
+lto = true
 rustflags = ["-C", "force-frame-pointers=yes"]

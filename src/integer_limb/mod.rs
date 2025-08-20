@@ -422,11 +422,9 @@ impl Integer {
                     r#"
                     # use overflowed as a writemask so we can reuse one_zmm
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
-                    kxorq {overflowed}, {overflowed}, {overflowed} # clear overflowed
-
-                    # kxorq {carry_mask_kreg}, {carry_mask_kreg}, {carry_mask_kreg} # clear carry_mask_kreg
-                    # knotq {carry_mask_kreg}, {carry_mask_kreg} # invert carry_mask_kreg the first time
-                    kxorq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
+                    # using smaller mask sizes still clears the rest of the register
+                    kxorb {overflowed}, {overflowed}, {overflowed} # clear overflowed
+                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
                     vpaddb {limb}, {limb}, [{0} + rcx] # add the vectors together
 
                     2: # carry processing loop
@@ -434,9 +432,9 @@ impl Integer {
                     korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg} # copy carry_mask_kreg to carry_mask_preserved
 
                     ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if carry_tmp is zero
-
                     jz 3f # if there are no carries, we are done
-                    mov {ever_carried}, 1 # since there are carries, set ever_carried
+
+                    mov {ever_carried}, 1 # since there are carries (we didn't jump), set ever_carried
 
                     vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm} # subtract 10 from those that triggered carries
                     kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1 # shift the mask left to use for carry propogation
