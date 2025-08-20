@@ -433,9 +433,11 @@ impl Integer {
                 _mm_prefetch(limb_ptr_i8.add(1024), _MM_HINT_ET1);
                 _mm_prefetch(rev_base_ptr_i8_offset.add(1024), _MM_HINT_T1);
 
-                // prefetch 2KiB ahead into L3 cache
-                _mm_prefetch(limb_ptr_i8.add(2048), _MM_HINT_T2);
-                _mm_prefetch(rev_base_ptr_i8_offset.add(2048), _MM_HINT_T2);
+                // prefetch 4KiB ahead into L3 cache
+                _mm_prefetch(limb_ptr_i8.add(4192), _MM_HINT_T2);
+                _mm_prefetch(rev_base_ptr_i8_offset.add(4192), _MM_HINT_T2);
+
+                // TODO: profile and see if these numbers make any sense
 
                 let carry_mask: u64;
                 std::arch::asm!(
