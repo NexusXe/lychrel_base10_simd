@@ -9,5 +9,6 @@
 #![feature(const_eval_select)]
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
+#![feature(iter_collect_into)]
 
 pub mod integer_limb;

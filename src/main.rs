@@ -9,6 +9,7 @@
 #![feature(const_eval_select)]
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
+#![feature(iter_collect_into)]
 
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
@@ -31,9 +32,7 @@ const INITIAL_SEED: &str = "196";
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
 fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> IterationResult {
     let mut current_iteration: Integer = starting_integer;
-    let mut reverse: Integer = Integer(Vec::<Limb>::new());
-
-    reverse.0.reserve(current_iteration.0.len());
+    let mut reverse_buf: Integer = Integer(Vec::with_capacity(current_iteration.0.len()));
 
     let mut carried: bool = false;
     let mut i: usize = range.start;
@@ -47,13 +46,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
     while likely(i < range.end) {
         if unlikely(!carried) {
             cold_path();
-            eprintln!("deep checking palindrome");
-            reverse.0.reserve(
-                current_iteration
-                    .0
-                    .len()
-                    .saturating_sub((reverse).0.capacity()),
-            );
+            let mut reverse: Integer = Integer(Vec::with_capacity(current_iteration.0.len()));
             current_iteration.reverse_into_integer(&mut reverse);
             if current_iteration.0 == reverse.0 {
                 cold_path();
@@ -61,10 +54,10 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
             }
         }
 
-        carried = current_iteration.fused_reverse_add_asm();
+        carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
 
-        const STEP_SIZE: usize = 2usize.pow(14);
-        const ACC_LIMIT: u8 = 16;
+        const STEP_SIZE: usize = 2usize.pow(13);
+        const ACC_LIMIT: u8 = 32;
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
             acc += 1;
 

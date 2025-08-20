@@ -374,7 +374,7 @@ impl Integer {
     }
 
     #[inline]
-    pub fn fused_reverse_add_asm(&mut self) -> bool {
+    pub fn fused_reverse_add_asm(&mut self, reversed: &mut Self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse and add empty integer");
@@ -387,15 +387,17 @@ impl Integer {
 
         let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
 
-        let mut reversed_limbs: Vec<u8x64> = self.0.iter().rev().map(|s| s.0.reverse()).collect();
+        reversed.0.clear();
 
-        if self.0.len() != reversed_limbs.len() {
+        self.0.iter().rev().map(|s| Limb(s.0.reverse())).collect_into(&mut reversed.0);
+
+        if self.0.len() != reversed.0.len() {
             unsafe {
                 std::hint::unreachable_unchecked();
             }
         }
 
-        reversed_limbs.push(u8x64::splat(0));
+        reversed.0.push(Limb(u8x64::splat(0)));
 
         let ten_vector: __m512i = u8x64::splat(10).into();
         let one_vector: __m512i = u8x64::splat(1).into();
@@ -409,23 +411,42 @@ impl Integer {
             u8x64::from_array(arr)
         });
 
-        for (limb, rev_limb) in self
-            .0
-            .iter_mut()
-            .zip(reversed_limbs[..reversed_limbs.len() - 1].iter())
-        {
-            let rev_ptr = rev_limb as *const u8x64;
+        let rev_base_ptr = reversed.0.as_ptr() as *const u8x64;
 
+        for (idx, limb) in self.0.iter_mut().enumerate()
+        {
+            let limb_ptr = &limb.0 as *const u8x64;
+            let offset = (idx * 64) + skip_len;
             unsafe {
+                // prefetch data for the next loop(s)
+                // prefetch cannot fail, even if it is given a bogus address,
+                // so it's safe to prefetch multiple loops forward
+
+                let limb_ptr_i8 = limb_ptr as *const i8;
+                let rev_base_ptr_i8_offset = (rev_base_ptr as *const i8).add(offset);
+
+                // prefetch 256 bytes ahead into L2 cache
+                _mm_prefetch(limb_ptr_i8.add(256), _MM_HINT_ET1);
+                _mm_prefetch(rev_base_ptr_i8_offset.add(256), _MM_HINT_T1);
+
+                // prefetch 1KiB ahead into L2 cache
+                _mm_prefetch(limb_ptr_i8.add(1024), _MM_HINT_ET1);
+                _mm_prefetch(rev_base_ptr_i8_offset.add(1024), _MM_HINT_T1);
+
+                // prefetch 2KiB ahead into L3 cache
+                _mm_prefetch(limb_ptr_i8.add(2048), _MM_HINT_T2);
+                _mm_prefetch(rev_base_ptr_i8_offset.add(2048), _MM_HINT_T2);
+
                 let carry_mask: u64;
                 std::arch::asm!(
                     r#"
+
                     # use overflowed as a writemask so we can reuse one_zmm
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed} # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
-                    vpaddb {limb}, {limb}, [{0} + rcx] # add the vectors together
+                    vpaddb {limb}, {limb}, [{base_ptr} + {offset}] # add the vectors together
 
                     2: # carry processing loop
                     vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10 and store them in carry_mask_kreg
@@ -441,19 +462,19 @@ impl Integer {
                     vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm} # propogate the carries
                     ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
                     jnz 2b # if it wasn't, loop again because there might be new carries to process
-                    
+
                     3: # done
                     "#,
-                    in(reg) rev_ptr, // pointer to the reversed limb
+                    base_ptr = in(reg) rev_base_ptr, // pointer to the reversed limb
                     // using a pointer lets us avoid loading it manually, since
                     // `vpaddb` can just take a memory address as an input
-                    in("rcx") skip_len, // use rcx so that `skip_len` is also in `cl` for `shl`
+                    offset = in(reg) offset,
                     limb = inout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
                     one_zmm = in(zmm_reg) one_vector, // a vector of 1s
                     ten_zmm = in(zmm_reg) ten_vector, // a vector of 10s
-                    carry_mask_kreg = out(kreg) _, // tmp kreg for carry processing
-                    carry_mask_preserved = out(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
+                    carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
+                    carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
                 );
                 if carry_mask & 0x8000000000000000u64 != 0 {
