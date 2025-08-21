@@ -336,43 +336,6 @@ impl Integer {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    #[allow(unused_variables)]
-    fn fused_reverse_add(&mut self) -> bool {
-        if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse and add empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
-        }
-
-        struct SpilloverDigits {
-            data: u8x64,
-            len: usize,
-        }
-
-        impl Iterator for SpilloverDigits {
-            type Item = u8;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                if self.len == 0 {
-                    return None;
-                }
-                self.len -= 1;
-                Some(self.data[self.len])
-            }
-        }
-
-        let msl_digits: usize = unsafe { self.0.last().unwrap_unchecked() }.len();
-        let spillover_length: usize = 64 - msl_digits;
-
-        debug_assert_ne!(msl_digits, 0, "Most significant limb is empty");
-
-        todo!()
-    }
-
     #[inline]
     pub fn fused_reverse_add_asm(&mut self, reversed: &mut Self) -> bool {
         if self.0.is_empty() {

@@ -267,7 +267,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let limit: usize = if args.contains(&"--short".to_string()) {
         eprintln!("Performing short run.");
-        LIMIT_SHORT * 4
+        LIMIT_SHORT * 5
     } else if args.contains(&"--bench".to_string()) {
         eprintln!("Performing benchmark run.");
         LIMIT_SHORT
