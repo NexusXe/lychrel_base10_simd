@@ -389,7 +389,11 @@ impl Integer {
 
         reversed.0.clear();
 
-        self.0.iter().rev().map(|s| Limb(s.0.reverse())).collect_into(&mut reversed.0);
+        self.0
+            .iter()
+            .rev()
+            .map(|s| Limb(s.0.reverse()))
+            .collect_into(&mut reversed.0);
 
         if self.0.len() != reversed.0.len() {
             unsafe {
@@ -401,6 +405,7 @@ impl Integer {
 
         let ten_vector: __m512i = u8x64::splat(10).into();
         let one_vector: __m512i = u8x64::splat(1).into();
+        let one_vector_64: __m512i = u64x8::splat(1).into();
 
         let mut ever_carried_byte: u8 = 0;
         let mut overflowed: u64 = 0;
@@ -413,57 +418,31 @@ impl Integer {
 
         let rev_base_ptr = reversed.0.as_ptr() as *const u8x64;
 
-        for (idx, limb) in self.0.iter_mut().enumerate()
-        {
-            let limb_ptr = &limb.0 as *const u8x64;
+        for (idx, limb) in self.0.iter_mut().enumerate() {
             let offset = (idx * 64) + skip_len;
             unsafe {
-                // prefetch data for the next loop(s)
-                // prefetch cannot fail, even if it is given a bogus address,
-                // so it's safe to prefetch multiple loops forward
-
-                let limb_ptr_i8 = limb_ptr as *const i8;
-                let rev_base_ptr_i8_offset = (rev_base_ptr as *const i8).add(offset);
-
-                // prefetch 256 bytes ahead into L2 cache
-                _mm_prefetch(limb_ptr_i8.add(256), _MM_HINT_ET1);
-                _mm_prefetch(rev_base_ptr_i8_offset.add(256), _MM_HINT_T1);
-
-                // prefetch 1KiB ahead into L2 cache
-                _mm_prefetch(limb_ptr_i8.add(1024), _MM_HINT_ET1);
-                _mm_prefetch(rev_base_ptr_i8_offset.add(1024), _MM_HINT_T1);
-
-                // prefetch 4KiB ahead into L3 cache
-                _mm_prefetch(limb_ptr_i8.add(4192), _MM_HINT_T2);
-                _mm_prefetch(rev_base_ptr_i8_offset.add(4192), _MM_HINT_T2);
-
-                // TODO: profile and see if these numbers make any sense
-
                 let carry_mask: u64;
                 std::arch::asm!(
                     r#"
-
                     # use overflowed as a writemask so we can reuse one_zmm
-                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_zmm} # add one if overflowed is set
+                    vpaddq {limb}{{{overflowed}}}, {limb}, {one_zmm_64} # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed} # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
-                    vpaddb {limb}, {limb}, [{base_ptr} + {offset}] # add the vectors together
+                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}] # add the vectors together; we can use the quadword variant again for the same reason
 
                     2: # carry processing loop
                     vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10 and store them in carry_mask_kreg
-                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg} # copy carry_mask_kreg to carry_mask_preserved
+                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg} # and carry_mask_kreg into carry_mask_preserved
 
-                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if carry_tmp is zero
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if there are any carries
                     jz 3f # if there are no carries, we are done
-
-                    mov {ever_carried}, 1 # since there are carries (we didn't jump), set ever_carried
+                    mov {ever_carried}, 1 # there were carries because we didn't jump
 
                     vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm} # subtract 10 from those that triggered carries
                     kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1 # shift the mask left to use for carry propogation
                     vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm} # propogate the carries
-                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if the overflow was the only carry
-                    jnz 2b # if it wasn't, loop again because there might be new carries to process
+                    jmp 2b # loop again because if there are no new carries it'll be caught earlier
 
                     3: # done
                     "#,
@@ -474,16 +453,18 @@ impl Integer {
                     limb = inout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
                     one_zmm = in(zmm_reg) one_vector, // a vector of 1s
+                    one_zmm_64 = in(zmm_reg) one_vector_64, // a vector of 1s, but as 64-bit quadwords
                     ten_zmm = in(zmm_reg) ten_vector, // a vector of 10s
                     carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
                     carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
                 );
-                if carry_mask & 0x8000000000000000u64 != 0 {
-                    overflowed = 1;
+
+                overflowed = if carry_mask & 0x8000000000000000u64 != 0 {
+                    1
                 } else {
-                    overflowed = 0;
-                }
+                    0
+                };
             }
         }
 

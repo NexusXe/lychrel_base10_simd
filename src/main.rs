@@ -53,11 +53,10 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
                 break;
             }
         }
-
         carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
 
-        const STEP_SIZE: usize = 2usize.pow(13);
-        const ACC_LIMIT: u8 = 32;
+        const STEP_SIZE: usize = 2usize.pow(14); // same physical core as the main loop
+        const ACC_LIMIT: u8 = 16;
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
             acc += 1;
 
@@ -66,7 +65,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
 
             let rate: f32 = STEP_SIZE as f32 / elapsed_time.as_secs_f32();
 
-            println!("{acc}: {i}; {rate:} iter/sec",);
+            println!("{acc}:{} {i}; {rate:} iter/sec", if acc < 10 {" "} else {""});
             if unlikely(acc == ACC_LIMIT) {
                 cold_path();
                 acc = 0;
@@ -76,6 +75,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
 
                 let current_iteration_cloned = current_iteration.clone();
                 thread::spawn(move || {
+                    core_affinity::set_for_current(core_affinity::CoreId{id: 19});
                     println!(
                         "Reached checkpoint: {}",
                         unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
@@ -160,6 +160,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //eprintln!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
+    core_affinity::set_for_current(core_affinity::CoreId{id: 4}); // fastest X3D core
+
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
 
@@ -236,9 +238,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let used_checkpoint_iteration = used_checkpoint_path
                             .file_name()
                             .and_then(|name| name.to_str())
-                            .and_then(|s| s.split('.').next())
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap();
+                            .and_then(|s| s.split('.').next()).map(|s| s.parse::<usize>())
+                            .unwrap()?;
                         let used_checkpoint = std::fs::read(used_checkpoint_path)?;
                         let checkpoint =
                             Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
@@ -266,7 +267,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let limit: usize = if args.contains(&"--short".to_string()) {
         eprintln!("Performing short run.");
-        LIMIT_SHORT * 3
+        LIMIT_SHORT * 4
     } else if args.contains(&"--bench".to_string()) {
         eprintln!("Performing benchmark run.");
         LIMIT_SHORT

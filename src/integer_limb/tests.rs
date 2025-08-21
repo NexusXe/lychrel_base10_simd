@@ -404,7 +404,8 @@ fn test_asm_random() {
         let mut reversed_integer_stable = Integer(Vec::with_capacity(integer1.0.len()));
         integer1.reverse_into_integer(&mut reversed_integer_stable);
 
-        let (known_correct_result, known_correct_carried): (Integer, bool) = integer1.clone() + reversed_integer_stable;
+        let (known_correct_result, known_correct_carried): (Integer, bool) =
+            integer1.clone() + reversed_integer_stable;
 
         let mut reversed_asm: Integer = Integer(Vec::with_capacity(integer1.0.len()));
         let asm_carried = integer1.fused_reverse_add_asm(&mut reversed_asm);
