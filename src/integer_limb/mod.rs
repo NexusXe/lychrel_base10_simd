@@ -72,7 +72,7 @@ impl const From<u8x64> for Limb {
 #[allow(dead_code)]
 impl Limb {
     #[inline]
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Limb(u8x64::splat(0))
     }
 
@@ -173,6 +173,7 @@ impl Limb {
         (low_vector.into(), high_vector.into())
     }
 
+    
     fn into_bytes(self) -> [u8; 64] {
         let self_simd: u8x64 = self.into();
         self_simd.into()
@@ -184,8 +185,7 @@ impl Limb {
 
     #[inline]
     const fn is_empty(&self) -> bool {
-        let zero: Limb = Limb(u8x64::splat(0));
-        self == &zero
+        self == &Limb::new()
     }
 
     fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -350,21 +350,37 @@ impl Integer {
 
         let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
 
-        reversed.0.clear();
+        if reversed.0.len() < self.0.len() {
+            debug_assert_eq!(self.0.len(), reversed.0.len() + 1);
+            reversed.0.push(Limb::new());
+            reversed.0.push(Limb::new());
+        } else if reversed.0.len() == self.0.len() {
+            reversed.0.push(Limb::new());
+        }
 
-        self.0
-            .iter()
-            .rev()
-            .map(|s| Limb(s.0.reverse()))
-            .collect_into(&mut reversed.0);
+        //reversed.0.clear();
 
-        if self.0.len() != reversed.0.len() {
+        for (idx, limb) in self.0.iter().rev().enumerate() {
+            reversed.0[idx] = limb.reverse();
+        }        
+
+        // self.0
+        //     .iter()
+        //     .rev()
+        //     .map(|s| Limb(s.0.reverse()))
+        //     .collect_into(&mut reversed.0);
+
+        if reversed.0.len() != (self.0.len() + 1) {
+            #[cfg(debug_assertions)]
+            unreachable!();
+
+            #[cfg(not(debug_assertions))]
             unsafe {
                 std::hint::unreachable_unchecked();
             }
         }
 
-        reversed.0.push(Limb(u8x64::splat(0)));
+        //reversed.0.push(Limb(u8x64::splat(0)));
 
         let ten_vector: __m512i = u8x64::splat(10).into();
         let one_vector: __m512i = u8x64::splat(1).into();
@@ -437,6 +453,7 @@ impl Integer {
         ever_carried_byte != 0
     }
 
+    #[inline]
     pub(crate) fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -673,7 +690,7 @@ impl Integer {
     }
 
     #[inline]
-    pub(crate) fn add_into_self(&mut self, rhs: &Self) -> bool {
+    fn add_into_self(&mut self, rhs: &Self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to add an empty integer");
@@ -858,6 +875,55 @@ macro_rules! integer {
 
         Integer(limbs)
     }};
+}
+
+#[derive(Debug)]
+pub struct PackedLimb(u8x64);
+
+impl From<__m512i> for PackedLimb {
+    #[inline]
+    fn from(val: __m512i) -> Self {
+        PackedLimb(u8x64::from(val))
+    }
+}
+
+impl const From<u8x64> for PackedLimb {
+    #[inline]
+    fn from(val: u8x64) -> Self {
+        PackedLimb(val)
+    }
+}
+
+impl From<(Limb, Limb)> for PackedLimb {
+    #[inline]
+    fn from(val: (Limb, Limb)) -> Self {
+        let limb2_shifted = unsafe { _mm512_slli_epi64(val.1.into(), 4) };
+        let output: PackedLimb = unsafe { _mm512_or_epi64(val.0.into(), limb2_shifted) }.into();
+        debug_assert_eq!(output.0, unsafe{_mm512_xor_epi64(val.0.into(), limb2_shifted)}.into());
+
+        output
+    }
+}
+
+impl From<PackedLimb> for (Limb, Limb) {
+    #[inline]
+    fn from(val: PackedLimb) -> Self {
+        unsafe {
+            let limb2_mask: __m512i = u8x64::splat(0xF0).into();
+            let limb2_shifted = _mm512_and_epi64(val.0.into(), limb2_mask);
+            
+            let limb1 = _mm512_xor_epi64(val.0.into(), limb2_shifted);
+            let limb2 = _mm512_srli_epi64(limb2_shifted, 4);
+            
+            (limb1.into(), limb2.into())
+        }
+    }
+}
+
+impl From<PackedLimb> for Limb {
+    fn from(val: PackedLimb) -> Self {
+        Limb(val.0)
+    }   
 }
 
 #[cfg(test)]

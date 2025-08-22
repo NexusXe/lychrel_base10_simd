@@ -32,7 +32,7 @@ const INITIAL_SEED: &str = "196";
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
 fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> IterationResult {
     let mut current_iteration: Integer = starting_integer;
-    let mut reverse_buf: Integer = Integer(Vec::with_capacity(current_iteration.0.len()));
+    let mut reverse_buf: Integer = Integer(vec![Limb::new(); current_iteration.0.len()]);
 
     let mut carried: bool = false;
     let mut i: usize = range.start;
@@ -54,9 +54,9 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
             }
         }
         carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
-
-        const STEP_SIZE: usize = 2usize.pow(14); // same physical core as the main loop
-        const ACC_LIMIT: u8 = 16;
+        const STEP_SIZE_EXP: u32 = 14;
+        const STEP_SIZE: usize = 2usize.pow(STEP_SIZE_EXP);
+        const ACC_LIMIT: u8 = 2u8.pow(18 - STEP_SIZE_EXP);
         if unlikely(i.is_multiple_of(STEP_SIZE)) {
             acc += 1;
 
@@ -75,18 +75,21 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
 
                 let current_iteration_cloned = current_iteration.clone();
                 thread::spawn(move || {
-                    core_affinity::set_for_current(core_affinity::CoreId{id: 19});
+                    cold_path();
+                    core_affinity::set_for_current(core_affinity::CoreId{id: 5}); // same physical core as the main loop
                     println!(
                         "Reached checkpoint: {}",
                         unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
                     );
                     let checkpoint = current_iteration_cloned.into_checkpoint(i);
+                    cold_path();
                     if checkpoint_path.exists() && checkpoint_path.is_file() {
                         print!("Checkpoint already exists; validating... ");
                         // read the file
                         let mut file = match std::fs::File::open(checkpoint_path) {
                             Ok(file) => file,
                             Err(_) => {
+                                cold_path();
                                 eprintln!("UNABLE TO OPEN FILE");
                                 eprintln!("Continuing anyway...");
                                 return;
@@ -96,9 +99,10 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
                         match file.read_to_end(&mut buffer) {
                             Ok(_) => {
                                 let read_checkpoint = Checkpoint::new(i, buffer);
-                                if read_checkpoint == checkpoint {
+                                if likely(read_checkpoint == checkpoint) {
                                     println!("OK");
                                 } else {
+                                    cold_path();
                                     println!("FAILED");
 
                                     eprintln!("Checkpoint validation failed at checkpoint {i:}");
@@ -106,6 +110,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
                                 }
                             }
                             Err(_) => {
+                                cold_path();
                                 eprintln!("UNABLE TO READ FILE");
                                 eprintln!("Continuing anyway...")
                             }
@@ -300,7 +305,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    if found_palindrome {
+    if unlikely(found_palindrome) {
         println!("Writing packed found palindrome to \"FOUND_{last_iteration}.txt\"");
         std::fs::write(
             format!("FOUND_{last_iteration}.txt"),
