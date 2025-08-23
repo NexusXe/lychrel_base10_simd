@@ -11,13 +11,14 @@
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
 
-
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
 use std::hint::{cold_path, likely, unlikely};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::simd::prelude::*;
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
 
@@ -27,19 +28,28 @@ pub struct IterationResult {
     end_integer: Integer,
 }
 
+pub struct StatusReport {
+    iteration: usize,
+    rate: f32,
+    current_value: Option<Integer>,
+}
+
 const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
+const LOG_FREQUENCY_EXP: usize = 14;
+const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
-fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> IterationResult {
+fn iterate(
+    range: std::ops::Range<usize>,
+    starting_integer: Integer,
+    tx: Option<Sender<StatusReport>>,
+) -> IterationResult {
     let mut current_iteration: Integer = starting_integer;
     let mut reverse_buf: Integer = Integer(vec![Limb::new(); current_iteration.0.len()]);
 
     let mut carried: bool = false;
     let mut i: usize = range.start;
-    let mut acc: u8 = 0;
-
-    let checkpoint_path = Path::new(CHECKPOINT_DIR);
 
     let start_time = Instant::now();
     let mut step_time = Instant::now();
@@ -55,100 +65,34 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
             }
         }
         carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
-        const STEP_SIZE_EXP: u32 = 14;
-        const STEP_SIZE: usize = 2usize.pow(STEP_SIZE_EXP);
-        const ACC_LIMIT: u8 = 2u8.pow(18 - STEP_SIZE_EXP);
-        if unlikely(i.is_multiple_of(STEP_SIZE)) {
-            acc += 1;
-
+        if unlikely(i.is_multiple_of(LOG_MASK)) {
             let elapsed_time = step_time.elapsed();
             step_time = Instant::now();
 
-            let rate: f32 = STEP_SIZE as f32 / elapsed_time.as_secs_f32();
+            let rate: f32 = LOG_MASK as f32 / elapsed_time.as_secs_f32();
 
-            println!(
-                "{acc}:{} {i}; {rate:} iter/sec",
-                if acc < 10 { " " } else { "" }
-            );
-            if unlikely(acc == ACC_LIMIT) {
-                cold_path();
-                acc = 0;
-
-                let checkpoint_path =
-                    checkpoint_path.join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
-
-                let current_iteration_cloned = current_iteration.clone();
-                thread::spawn(move || {
-                    cold_path();
-                    let _ = affinity::set_thread_affinity([5]); // same physical core as the main loop
-                    println!(
-                        "Reached checkpoint: {}",
-                        unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
-                    );
-                    let checkpoint = current_iteration_cloned.into_checkpoint(i);
-                    cold_path();
-                    if checkpoint_path.exists() && checkpoint_path.is_file() {
-                        print!("Checkpoint already exists; validating... ");
-                        // read the file
-                        let mut file = match std::fs::File::open(checkpoint_path) {
-                            Ok(file) => file,
-                            Err(_) => {
-                                cold_path();
-                                eprintln!("UNABLE TO OPEN FILE");
-                                eprintln!("Continuing anyway...");
-                                return;
-                            }
-                        };
-                        let mut buffer = Vec::new();
-                        match file.read_to_end(&mut buffer) {
-                            Ok(_) => {
-                                let read_checkpoint = Checkpoint::new(i, buffer);
-                                if likely(read_checkpoint == checkpoint) {
-                                    println!("OK");
-                                } else {
-                                    cold_path();
-                                    println!("FAILED");
-
-                                    eprintln!("Checkpoint validation failed at checkpoint {i:}");
-                                    std::process::exit(1)
-                                }
-                            }
-                            Err(_) => {
-                                cold_path();
-                                eprintln!("UNABLE TO READ FILE");
-                                eprintln!("Continuing anyway...")
-                            }
-                        }
+            let report = StatusReport {
+                iteration: i,
+                rate,
+                current_value: {
+                    if unlikely(i.is_multiple_of(2usize.pow(18))) {
+                        Some(current_iteration.clone())
                     } else {
-                        print!("Writing checkpoint to {}... ", checkpoint_path.display());
-                        let data = checkpoint.data().1;
-                        let data_length = data.len();
-                        match std::fs::write(checkpoint_path, data) {
-                            Ok(_) => {
-                                println!("OK");
-                                println!("Wrote {:} KiB", data_length / 1024);
-                            }
-                            Err(e) => {
-                                eprintln!("FAILED: {e}");
-                                std::process::exit(1);
-                            }
-                        }
+                        None
                     }
-                });
+                },
+            };
 
-                let num_limbs = current_iteration.0.len();
-
-                println!(
-                    "{:} limbs, approx. {:} digits, {:} KiB of memory",
-                    num_limbs,
-                    num_limbs * 64,
-                    (num_limbs * 64).div_ceil(1024)
-                );
+            if likely(tx.is_some()) {
+                if unlikely(unsafe{tx.as_ref().unwrap_unchecked()}.send(report).is_err()) {
+                    //eprintln!("Main thread has disconnected. Stopping.");
+                    break;
+                }
+            } else {
+                cold_path();
+                //println!("{i}; {rate:} iter/sec");
             }
         }
-
-        //current_iteration.reverse_into_integer(&mut reverse);
-
         i += 1;
     }
     IterationResult {
@@ -284,7 +228,104 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         LIMIT
     };
 
-    let result = iterate(starting_iteration..limit, initial_value);
+    let (tx, rx) = mpsc::channel::<StatusReport>();
+
+    let iteration_handle = thread::spawn(move || iterate(starting_iteration..limit, initial_value, Some(tx)));
+
+    for status_report in rx {
+        let i = status_report.iteration;
+        let rate = status_report.rate;
+        let current_value = status_report.current_value;
+
+        let log_idx = i.div_floor(LOG_MASK) % 16;
+
+        println!(
+            "{log_idx}:{} {i}; {rate:} iter/sec",
+            if log_idx < 10 { " " } else { "" }
+        );
+
+        if current_value.is_some() {
+            cold_path();
+
+            let current_value = unsafe{current_value.unwrap_unchecked()};
+
+            let num_limbs = current_value.0.len();
+
+            let checkpoint_path =
+                Path::new(CHECKPOINT_DIR).join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
+
+            println!(
+                "Reached checkpoint: {}",
+                unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
+            );
+            let checkpoint = current_value.into_checkpoint(i);
+            cold_path();
+            if checkpoint_path.exists() && checkpoint_path.is_file() {
+                print!("Checkpoint already exists; validating... ");
+                // read the file
+                let mut file = match std::fs::File::open(checkpoint_path) {
+                    Ok(file) => file,
+                    Err(_) => {
+                        cold_path();
+                        eprintln!("UNABLE TO OPEN FILE");
+                        eprintln!("Continuing anyway...");
+                        continue;
+                    }
+                };
+                let mut buffer = Vec::new();
+                match file.read_to_end(&mut buffer) {
+                    Ok(_) => {
+                        let read_checkpoint = Checkpoint::new(i, buffer);
+                        if likely(read_checkpoint == checkpoint) {
+                            println!("OK");
+                        } else {
+                            cold_path();
+                            println!("FAILED");
+
+                            eprintln!("Checkpoint validation failed at checkpoint {i:}");
+                            std::process::exit(1)
+                        }
+                    }
+                    Err(_) => {
+                        cold_path();
+                        eprintln!("UNABLE TO READ FILE");
+                        eprintln!("Continuing anyway...")
+                    }
+                }
+            } else {
+                print!("Writing checkpoint to {}... ", checkpoint_path.display());
+                let data = checkpoint.data().1;
+                let data_length = data.len();
+                match std::fs::write(checkpoint_path, data) {
+                    Ok(_) => {
+                        println!("OK");
+                        println!("Wrote {:} KiB", data_length / 1024);
+                    }
+                    Err(e) => {
+                        eprintln!("FAILED: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            println!(
+                "{:} limbs, approx. {:} digits, {:} KiB of memory",
+                num_limbs,
+                num_limbs * 64,
+                (num_limbs * 64).div_ceil(1024)
+            );
+        }
+    }
+
+    let result = iteration_handle.join();
+
+    if result.is_err() {
+        eprintln!("Worker thread died. Exiting.");
+        std::process::exit(1);
+    }
+
+    let result = result.unwrap();
+
     let (last_iteration, start_time, end_integer) =
         (result.last_iteration, result.start_time, result.end_integer);
 
