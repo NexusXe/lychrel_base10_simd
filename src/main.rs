@@ -11,6 +11,7 @@
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
 
+
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
 use std::hint::{cold_path, likely, unlikely};
@@ -65,7 +66,10 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
 
             let rate: f32 = STEP_SIZE as f32 / elapsed_time.as_secs_f32();
 
-            println!("{acc}:{} {i}; {rate:} iter/sec", if acc < 10 {" "} else {""});
+            println!(
+                "{acc}:{} {i}; {rate:} iter/sec",
+                if acc < 10 { " " } else { "" }
+            );
             if unlikely(acc == ACC_LIMIT) {
                 cold_path();
                 acc = 0;
@@ -76,7 +80,7 @@ fn iterate(range: std::ops::Range<usize>, starting_integer: Integer) -> Iteratio
                 let current_iteration_cloned = current_iteration.clone();
                 thread::spawn(move || {
                     cold_path();
-                    core_affinity::set_for_current(core_affinity::CoreId{id: 5}); // same physical core as the main loop
+                    let _ = affinity::set_thread_affinity([5]); // same physical core as the main loop
                     println!(
                         "Reached checkpoint: {}",
                         unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
@@ -165,8 +169,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //eprintln!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
-    core_affinity::set_for_current(core_affinity::CoreId{id: 4}); // fastest X3D core
-
+    let _ = affinity::set_process_affinity([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // X3D cores
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
 
@@ -243,7 +246,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let used_checkpoint_iteration = used_checkpoint_path
                             .file_name()
                             .and_then(|name| name.to_str())
-                            .and_then(|s| s.split('.').next()).map(|s| s.parse::<usize>())
+                            .and_then(|s| s.split('.').next())
+                            .map(|s| s.parse::<usize>())
                             .unwrap()?;
                         let used_checkpoint = std::fs::read(used_checkpoint_path)?;
                         let checkpoint =

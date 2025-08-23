@@ -173,7 +173,6 @@ impl Limb {
         (low_vector.into(), high_vector.into())
     }
 
-    
     fn into_bytes(self) -> [u8; 64] {
         let self_simd: u8x64 = self.into();
         self_simd.into()
@@ -362,7 +361,7 @@ impl Integer {
 
         for (idx, limb) in self.0.iter().rev().enumerate() {
             reversed.0[idx] = limb.reverse();
-        }        
+        }
 
         // self.0
         //     .iter()
@@ -404,26 +403,26 @@ impl Integer {
                 std::arch::asm!(
                     r#"
                     # use overflowed as a writemask so we can reuse one_zmm
-                    vpaddq {limb}{{{overflowed}}}, {limb}, {one_zmm_64} # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
+                    vpaddq {limb}{{{overflowed}}}, {limb}, {one_zmm_64}                             # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
                     # using smaller mask sizes still clears the rest of the register
-                    kxorb {overflowed}, {overflowed}, {overflowed} # clear overflowed
-                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved} # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}] # add the vectors together; we can use the quadword variant again for the same reason
+                    kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
+                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
+                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; we can use the quadword variant again for the same reason
 
                     2: # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5 # find the digits that are >= 10 and store them in carry_mask_kreg
-                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg} # and carry_mask_kreg into carry_mask_preserved
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5                                 # find the digits that are >= 10 and store them in carry_mask_kreg
+                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
 
-                    ktestq {carry_mask_kreg}, {carry_mask_kreg} # see if there are any carries
-                    jz 3f # if there are no carries, we are done
-                    mov {ever_carried}, 1 # there were carries because we didn't jump
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
+                    jz 3f                                                                           # if there are no carries, we are done
+                    mov {ever_carried}, 1                                                           # there were carries because we didn't jump
 
-                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm} # subtract 10 from those that triggered carries
-                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1 # shift the mask left to use for carry propogation
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm} # propogate the carries
-                    jmp 2b # loop again because if there are no new carries it'll be caught earlier
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm}                           # subtract 10 from those that triggered carries
+                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm}                           # propogate the carries
+                    jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
 
-                    3: # done
+                    3:                                                                              # done
                     "#,
                     base_ptr = in(reg) rev_base_ptr, // pointer to the reversed limb
                     // using a pointer lets us avoid loading it manually, since
@@ -877,8 +876,10 @@ macro_rules! integer {
     }};
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct PackedLimb(u8x64);
+
+pub(crate) type LimbPair = (Limb, Limb);
 
 impl From<__m512i> for PackedLimb {
     #[inline]
@@ -894,36 +895,78 @@ impl const From<u8x64> for PackedLimb {
     }
 }
 
-impl From<(Limb, Limb)> for PackedLimb {
+impl From<LimbPair> for PackedLimb {
     #[inline]
-    fn from(val: (Limb, Limb)) -> Self {
+    fn from(val: LimbPair) -> Self {
         let limb2_shifted = unsafe { _mm512_slli_epi64(val.1.into(), 4) };
         let output: PackedLimb = unsafe { _mm512_or_epi64(val.0.into(), limb2_shifted) }.into();
-        debug_assert_eq!(output.0, unsafe{_mm512_xor_epi64(val.0.into(), limb2_shifted)}.into());
+        debug_assert_eq!(
+            output.0,
+            unsafe { _mm512_xor_epi64(val.0.into(), limb2_shifted) }.into()
+        );
 
         output
     }
 }
 
-impl From<PackedLimb> for (Limb, Limb) {
+impl From<PackedLimb> for LimbPair {
     #[inline]
     fn from(val: PackedLimb) -> Self {
         unsafe {
             let limb2_mask: __m512i = u8x64::splat(0xF0).into();
             let limb2_shifted = _mm512_and_epi64(val.0.into(), limb2_mask);
-            
+
             let limb1 = _mm512_xor_epi64(val.0.into(), limb2_shifted);
             let limb2 = _mm512_srli_epi64(limb2_shifted, 4);
-            
+
             (limb1.into(), limb2.into())
         }
     }
 }
 
-impl From<PackedLimb> for Limb {
-    fn from(val: PackedLimb) -> Self {
-        Limb(val.0)
-    }   
+#[derive(Debug)]
+pub struct PackedInteger(Vec<PackedLimb>);
+
+impl From<Integer> for PackedInteger {
+    #[inline]
+    fn from(val: Integer) -> Self {
+        let mut limbs: Vec<PackedLimb> = Vec::with_capacity(val.0.len() / 2);
+
+        for limb_pair in val.0.chunks(2) {
+            match limb_pair.len() {
+                2 => {
+                    limbs.push((limb_pair[0], limb_pair[1]).into());
+                }
+                1 => {
+                    limbs.push((limb_pair[0], Limb::new()).into());
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+
+        PackedInteger(limbs)
+    }
+}
+
+impl From<PackedInteger> for Integer {
+    #[inline]
+    fn from(val: PackedInteger) -> Self {
+        let mut limbs: Vec<Limb> = Vec::with_capacity(val.0.len() * 2);
+
+        for packed_limbs in val.0.iter() {
+            let (limb1, limb2) = LimbPair::from(*packed_limbs);
+            limbs.push(limb1);
+            limbs.push(limb2);
+        }
+
+        if limbs.last().unwrap() == &Limb::new() {
+            limbs.pop();
+        }
+
+        Integer(limbs)
+    }
 }
 
 #[cfg(test)]

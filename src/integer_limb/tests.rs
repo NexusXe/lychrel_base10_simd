@@ -423,3 +423,20 @@ fn test_asm_random() {
         test_with_rng(&mut rng, true);
     }
 }
+
+#[test]
+fn test_packedlimb_packing() {
+    let limb1: Limb = u8x64::splat(1).into();
+    let limb2: Limb = u8x64::splat(2).into();
+
+    let packed_limb: PackedLimb = PackedLimb::from((limb1, limb2));
+    assert_eq!(packed_limb.0, u8x64::splat(0x21));
+}
+
+#[test]
+fn test_packedlimb_unpacking() {
+    let packed_limb: PackedLimb = u8x64::splat(0x21).into();
+    let (limb1, limb2): LimbPair = packed_limb.into();
+    assert_eq!(limb1, u8x64::splat(1).into());
+    assert_eq!(limb2, u8x64::splat(2).into());
+}
