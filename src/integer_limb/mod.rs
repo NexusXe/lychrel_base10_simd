@@ -158,7 +158,7 @@ impl Limb {
         });
 
         let other_shifted = unsafe { _mm512_slli_epi64(other_vector, 4) };
-        unsafe { _mm512_or_epi64(self_vector, other_shifted) }.into()
+        unsafe { _mm512_or_si512(self_vector, other_shifted) }.into()
     }
 
     fn unpack(self) -> (Self, Self) {
@@ -929,10 +929,10 @@ impl From<LimbPair> for PackedLimb {
     #[inline]
     fn from(val: LimbPair) -> Self {
         let limb2_shifted = unsafe { _mm512_slli_epi64(val.1.into(), 4) };
-        let output: Self = unsafe { _mm512_or_epi64(val.0.into(), limb2_shifted) }.into();
+        let output: Self = unsafe { _mm512_or_si512(val.0.into(), limb2_shifted) }.into();
         debug_assert_eq!(
             output.0,
-            unsafe { _mm512_xor_epi64(val.0.into(), limb2_shifted) }.into()
+            unsafe { _mm512_xor_si512(val.0.into(), limb2_shifted) }.into()
         );
 
         output
@@ -946,7 +946,7 @@ impl From<PackedLimb> for LimbPair {
             let limb2_mask: __m512i = u8x64::splat(0xF0).into();
             let limb2_shifted = _mm512_and_si512(val.0.into(), limb2_mask);
 
-            let limb1 = _mm512_xor_epi64(val.0.into(), limb2_shifted);
+            let limb1 = _mm512_xor_si512(val.0.into(), limb2_shifted);
             let limb2 = _mm512_srli_epi64(limb2_shifted, 4);
 
             (limb1.into(), limb2.into())
