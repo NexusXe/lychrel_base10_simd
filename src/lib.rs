@@ -10,5 +10,6 @@
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
+#![deny(clippy::all)]
 
 pub mod integer_limb;

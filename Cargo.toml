@@ -7,7 +7,7 @@ edition = "2024"
 default-run = "lychrel_base10_simd"
 
 [dependencies]
-# compile-time = "0.2.0"
+compile-time = "0.2.0"
 # rayon = "1.11.0"
 affinity = "0.1"
 
@@ -51,7 +51,7 @@ rustflags = ["-C", "force-frame-pointers=yes"]
 
 [profile.test]
 inherits = "dev"
-opt-level = 3
+opt-level = 2
 overflow-checks = true
 debug-assertions = true
 lto = true

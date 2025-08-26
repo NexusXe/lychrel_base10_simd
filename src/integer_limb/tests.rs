@@ -21,7 +21,7 @@ fn test_len_multiple_digits() {
 
 #[test]
 fn test_len_full() {
-    let limb = Limb::new_from_value(u64::MAX as u128);
+    let limb = Limb::new_from_value(u128::from(u64::MAX));
     assert_eq!(limb.len(), 20);
 
     let limb = Limb::new_from_value(u128::MAX);
@@ -132,7 +132,7 @@ fn test_integer_add() {
     let limb1 = integer!("7");
     let limb2 = integer!("1");
     let result = limb1 + limb2;
-    assert_eq!(result, (integer!("8"), false))
+    assert_eq!(result, (integer!("8"), false));
 }
 
 #[test]
@@ -146,10 +146,10 @@ fn test_limb_len() {
     let limb = Limb::new_from_value(12345);
     assert_eq!(limb.len(), 5);
 
-    let limb = Limb::new_from_value(100000000000000000000000000000000000000); // 39 digits
+    let limb = Limb::new_from_value(100_000_000_000_000_000_000_000_000_000_000_000_000); // 39 digits
     assert_eq!(limb.len(), 39);
 
-    let limb = Limb::new_from_value(340282366920938463463374607431768211455); // 39 digits
+    let limb = Limb::new_from_value(340_282_366_920_938_463_463_374_607_431_768_211_455); // 39 digits
     assert_eq!(limb.len(), 39);
 
     for i in 1..=9 {
@@ -227,8 +227,8 @@ fn test_pack_unpack_limb_random() {
         assert_eq!(reconstructed.unpack(), integer);
     }
 
-    test_with_seed(0xdeadbeef);
-    test_with_seed(0xbaadf00d);
+    test_with_seed(0xdead_beef);
+    test_with_seed(0xbaad_f00d);
 }
 
 #[test]
@@ -256,11 +256,11 @@ fn test_write_and_read_checkpoint() {
     use std::io::Write;
 
     const LEN: usize = 13;
-    let mut rng = SmallRng::seed_from_u64(0xABCDEF0123456789);
+    let mut rng = SmallRng::seed_from_u64(0xABCD_EF01_2345_6789);
     let mut arrs: Vec<[u8; 64]> = Vec::with_capacity(LEN);
     for _ in 0..LEN {
         let mut arr: [u8; 64] = [0; 64];
-        for item in arr.iter_mut() {
+        for item in &mut arr {
             *item = rng.random_range(0..10);
         }
         arrs.push(arr);
@@ -300,7 +300,7 @@ fn test_write_and_read_checkpoint() {
 
     //assert_eq!(integer, integer_read.clone());
     assert_eq!(integer, integer_read.clone().unpack());
-    assert!(!integer_read.clone().unpack().has_carries());
+    assert!(!integer_read.unpack().has_carries());
 }
 
 #[test]
@@ -417,7 +417,7 @@ fn test_asm_random() {
         assert_eq!(asm_carried, known_correct_carried);
     }
 
-    let mut rng = SmallRng::seed_from_u64(0xdeadbeef);
+    let mut rng = SmallRng::seed_from_u64(0xdead_beef);
     for _ in 0..256 {
         test_with_rng(&mut rng, false);
         test_with_rng(&mut rng, true);
@@ -439,4 +439,49 @@ fn test_packedlimb_unpacking() {
     let (limb1, limb2): LimbPair = packed_limb.into();
     assert_eq!(limb1, u8x64::splat(1).into());
     assert_eq!(limb2, u8x64::splat(2).into());
+}
+
+#[test]
+fn test_packedlimb_len() {
+    use std::num::NonZeroU32;
+    let packed_limb: PackedLimb = u8x64::splat(0x21).into();
+    assert_eq!(packed_limb.len(), NonZeroU32::new(64).unwrap());
+
+    let integer = integer!("123456789012345678901234567890");
+    let packed_integer: PackedInteger = integer.into();
+
+    let last_limb_len = packed_integer.0.last().unwrap().len();
+    assert_eq!(last_limb_len, NonZeroU32::new(30).unwrap());
+
+    let integer = integer!("1234567890123456789012345678901212345678901234567890123456789012");
+    let packed_integer: PackedInteger = integer.into();
+    assert_eq!(
+        packed_integer.0.last().unwrap().len(),
+        NonZeroU32::new(64).unwrap()
+    );
+
+    let integer = integer!(
+        "12345678901234567890123456789012123456789012345678901234567890121234567890123456789012345678901212345678901234567890123456789012"
+    );
+    let packed_integer: PackedInteger = integer.into();
+    assert_eq!(
+        packed_integer.0.last().unwrap().len(),
+        NonZeroU32::new(64).unwrap()
+    );
+
+    let integer = integer!(
+        "1234567890123456789012345678901212345678901234567890123456789012123456789012345678901234567890121234567890123456789012345678901"
+    );
+    let packed_integer: PackedInteger = integer.into();
+    assert_eq!(
+        packed_integer.0.last().unwrap().len(),
+        NonZeroU32::new(63).unwrap()
+    );
+
+    let integer = integer!("12345678901234567890123456789012123456789012345678901234567890123");
+    let packed_integer: PackedInteger = integer.into();
+    assert_eq!(
+        packed_integer.0.last().unwrap().len(),
+        NonZeroU32::new(1).unwrap()
+    );
 }

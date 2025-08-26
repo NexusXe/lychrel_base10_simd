@@ -10,6 +10,7 @@
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
+#![deny(clippy::all)]
 
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
@@ -30,13 +31,12 @@ pub struct IterationResult {
 
 pub struct StatusReport {
     iteration: usize,
-    rate: f32,
     current_value: Option<Integer>,
 }
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
-const LOG_FREQUENCY_EXP: usize = 14;
+const LOG_FREQUENCY_EXP: usize = 13;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
@@ -52,7 +52,6 @@ fn iterate(
     let mut i: usize = range.start;
 
     let start_time = Instant::now();
-    let mut step_time = Instant::now();
 
     while likely(i < range.end) {
         if unlikely(!carried) {
@@ -66,16 +65,11 @@ fn iterate(
         }
         carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
         if unlikely(i.is_multiple_of(LOG_MASK)) {
-            let elapsed_time = step_time.elapsed();
-            step_time = Instant::now();
-
-            let rate: f32 = LOG_MASK as f32 / elapsed_time.as_secs_f32();
-
             let report = StatusReport {
                 iteration: i,
-                rate,
                 current_value: {
                     if unlikely(i.is_multiple_of(2usize.pow(18))) {
+                        cold_path();
                         Some(current_iteration.clone())
                     } else {
                         None
@@ -84,7 +78,11 @@ fn iterate(
             };
 
             if likely(tx.is_some()) {
-                if unlikely(unsafe{tx.as_ref().unwrap_unchecked()}.send(report).is_err()) {
+                if unlikely(
+                    unsafe { tx.as_ref().unwrap_unchecked() }
+                        .send(report)
+                        .is_err(),
+                ) {
                     //eprintln!("Main thread has disconnected. Stopping.");
                     break;
                 }
@@ -108,12 +106,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
 
-    //let compile_datetime = compile_time::datetime_str!();
-    //let rustc_version = compile_time::rustc_version_str!();
+    let compile_datetime = compile_time::datetime_str!();
+    let rustc_version = compile_time::rustc_version_str!();
 
-    //eprintln!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
+    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
-    let _ = affinity::set_process_affinity([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // X3D cores
+    let _ = affinity::set_process_affinity([6]); // fastest X3D core, upper thread
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
 
@@ -124,7 +122,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match std::fs::read_dir(checkpoint_path) {
             Ok(entries) => {
-                println!("Using pre-existing checkpoints folder.");
+                eprintln!("Using pre-existing checkpoints folder.");
                 // since the folder exists, get the `Path`s of all files inside of it
                 // filter out those that are irrelevant to our current seed
                 let mut checkpoint_files: Vec<std::path::PathBuf> = entries
@@ -150,7 +148,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let start_at_index = match args.iter().position(|arg| arg == "--start-at") {
                         Some(index) => index,
                         None => {
-                            eprintln!("Please specify the checkpoint index to start at");
+                            eprintln!("Please specify a checkpoint index to start at");
                             std::process::exit(1);
                         }
                     };
@@ -208,14 +206,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(_) => {
                 std::fs::create_dir(checkpoint_path)?;
-                println!(
-                    "Created new local checkpoints folder at {}",
-                    checkpoint_path.canonicalize()?.display()
-                );
+                eprintln!("Created new local checkpoints folder in local directory");
             }
         }
     } else {
-        println!("Not starting from checkpoint.");
+        eprintln!("Not starting from checkpoint.");
     }
 
     let limit: usize = if args.contains(&"--short".to_string()) {
@@ -230,14 +225,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
-    let iteration_handle = thread::spawn(move || iterate(starting_iteration..limit, initial_value, Some(tx)));
+    let iteration_handle = thread::spawn(move || {
+        let _ = affinity::set_thread_affinity([5]); // fastest X3D core, lower thread
+        iterate(starting_iteration..limit, initial_value, Some(tx))
+    });
+
+    let mut step_time = Instant::now();
 
     for status_report in rx {
+        let elapsed_time = step_time.elapsed();
+        step_time = Instant::now();
+
         let i = status_report.iteration;
-        let rate = status_report.rate;
         let current_value = status_report.current_value;
 
         let log_idx = i.div_floor(LOG_MASK) % 16;
+
+        let rate: f32 =
+            unsafe { std::intrinsics::fdiv_fast(LOG_MASK as f32, elapsed_time.as_secs_f32()) };
 
         println!(
             "{log_idx}:{} {i}; {rate:} iter/sec",
@@ -247,7 +252,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if current_value.is_some() {
             cold_path();
 
-            let current_value = unsafe{current_value.unwrap_unchecked()};
+            let current_value = unsafe { current_value.unwrap_unchecked() };
 
             let num_limbs = current_value.0.len();
 
@@ -267,8 +272,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(file) => file,
                     Err(_) => {
                         cold_path();
-                        eprintln!("UNABLE TO OPEN FILE");
-                        eprintln!("Continuing anyway...");
+                        eprintln!("UNABLE TO OPEN FILE\nContinuing anyway...");
+
                         continue;
                     }
                 };

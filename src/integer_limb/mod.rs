@@ -22,10 +22,10 @@ impl const std::cmp::PartialEq for Limb {
             let arr2_64b: [u64; 8] = unsafe { transmute(arr2) };
             let mut i: usize = 8;
             while i > 0 {
-                if arr1_64b[i] != arr2_64b[i] {
-                    return false;
-                } else {
+                if arr1_64b[i] == arr2_64b[i] {
                     i -= 1;
+                } else {
+                    return false;
                 }
             }
             false
@@ -58,14 +58,14 @@ impl const From<Limb> for u8x64 {
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
-        Limb(val.into())
+        Self(val.into())
     }
 }
 
 impl const From<u8x64> for Limb {
     #[inline]
     fn from(val: u8x64) -> Self {
-        Limb(val)
+        Self(val)
     }
 }
 
@@ -73,7 +73,7 @@ impl const From<u8x64> for Limb {
 impl Limb {
     #[inline]
     pub(crate) const fn new() -> Self {
-        Limb(u8x64::splat(0))
+        Self(u8x64::splat(0))
     }
 
     fn new_from_value(value: u128) -> Self {
@@ -86,7 +86,7 @@ impl Limb {
                 panic!("Invalid digit in input value: {c}");
             }
         }
-        Limb(digits)
+        Self(digits)
     }
 
     #[inline]
@@ -99,12 +99,13 @@ impl Limb {
 
     #[inline]
     fn process_carries(&self) -> (Self, bool) {
+        const ONE_VEC: u8x64 = u8x64::splat(1);
+        const COMPARE_VEC: u8x64 = u8x64::splat(10);
+
         if !self.has_carries() {
             return (*self, false);
         }
 
-        const ONE_VEC: u8x64 = u8x64::splat(1);
-        const COMPARE_VEC: u8x64 = u8x64::splat(10);
         let compare: __m512i = __m512i::from(COMPARE_VEC);
         let mut digits: __m512i = __m512i::from(self.0);
         let mut carries_past_last: bool = false;
@@ -119,7 +120,7 @@ impl Limb {
             }
 
             digits = unsafe { _mm512_mask_sub_epi8(digits, carries, digits, compare) };
-            carries_past_last |= carries & 0x8000000000000000u64 != 0; // the most we can ever carry is 1, so we track if this bit is ever set; it getting set multiple times is irrelevant to the final result
+            carries_past_last |= carries & 0x8000_0000_0000_0000_u64 != 0; // the most we can ever carry is 1, so we track if this bit is ever set; it getting set multiple times is irrelevant to the final result
             carries <<= 1;
 
             // now add the carries to the next digit
@@ -165,26 +166,25 @@ impl Limb {
         let high_bytes: __m512i = u8x64::splat(0xF0).into();
         let low_bytes: __m512i = u8x64::splat(0x0F).into();
 
-        let high_vector_shifted = unsafe { _mm512_and_epi64(self_vector, high_bytes) };
+        let high_vector_shifted = unsafe { _mm512_and_si512(self_vector, high_bytes) };
         let high_vector = unsafe { _mm512_srli_epi64(high_vector_shifted, 4) };
 
-        let low_vector = unsafe { _mm512_and_epi64(self_vector, low_bytes) };
+        let low_vector = unsafe { _mm512_and_si512(self_vector, low_bytes) };
 
         (low_vector.into(), high_vector.into())
     }
 
-    fn into_bytes(self) -> [u8; 64] {
-        let self_simd: u8x64 = self.into();
-        self_simd.into()
+    const fn into_bytes(self) -> [u8; 64] {
+        self.0.to_array()
     }
 
-    fn from_bytes(input: [u8; 64]) -> Self {
-        Limb(u8x64::from(input))
+    const fn from_bytes(input: [u8; 64]) -> Self {
+        Self(u8x64::from_array(input))
     }
 
     #[inline]
     const fn is_empty(&self) -> bool {
-        self == &Limb::new()
+        self == &Self::new()
     }
 
     fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -198,7 +198,7 @@ impl Limb {
 
 impl Default for Limb {
     fn default() -> Self {
-        Limb::new()
+        Self::new()
     }
 }
 
@@ -230,7 +230,7 @@ impl std::fmt::Debug for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let digits: [u8; 64] = self.0.into();
         write!(f, "[")?;
-        for i in digits.iter() {
+        for i in &digits {
             write!(f, "{i}")?;
         }
         write!(f, "]")
@@ -249,8 +249,8 @@ pub(crate) struct Checkpoint {
 
 #[allow(dead_code)]
 impl Checkpoint {
-    pub(crate) fn new(iteration: usize, integer: Vec<u8>) -> Self {
-        Checkpoint { iteration, integer }
+    pub(crate) const fn new(iteration: usize, integer: Vec<u8>) -> Self {
+        Self { iteration, integer }
     }
 
     pub(crate) fn data(self) -> (usize, Vec<u8>) {
@@ -261,7 +261,7 @@ impl Checkpoint {
 #[allow(dead_code)]
 impl Integer {
     #[inline]
-    pub(crate) fn reverse_into_integer(&self, output: &mut Integer) {
+    pub(crate) fn reverse_into_integer(&self, output: &mut Self) {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse an empty integer");
@@ -308,7 +308,7 @@ impl Integer {
         // method 2:
         output_vec.push(Limb::new());
 
-        let vec_beginning_ptr = output_vec.as_mut_ptr() as *mut u8;
+        let vec_beginning_ptr = output_vec.as_mut_ptr().cast::<u8>();
         let output_len_bytes = output_vec.len() * 64;
 
         let output_slice =
@@ -394,7 +394,7 @@ impl Integer {
             u8x64::from_array(arr)
         });
 
-        let rev_base_ptr = reversed.0.as_ptr() as *const u8x64;
+        let rev_base_ptr = reversed.0.as_ptr().cast::<u8x64>();
 
         for (idx, limb) in self.0.iter_mut().enumerate() {
             let offset = (idx * 64) + skip_len;
@@ -438,17 +438,13 @@ impl Integer {
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
                 );
 
-                overflowed = if carry_mask & 0x8000000000000000u64 != 0 {
-                    1
-                } else {
-                    0
-                };
+                overflowed = (carry_mask & 0x8000_0000_0000_0000_u64 != 0).into();
             }
         }
 
         if overflowed != 0 {
             self.0.push(ONE_LIMB);
-        };
+        }
         ever_carried_byte != 0
     }
 
@@ -494,12 +490,12 @@ impl Integer {
                 .iter()
                 .zip(other_limb.0.as_array().iter())
             {
-                if self_digit != other_digit {
-                    write!(self_string, "\x1b[31m{self_digit}\x1b[0m").unwrap();
-                    write!(other_string, "\x1b[31m{other_digit}\x1b[0m").unwrap();
-                } else {
+                if likely(self_digit == other_digit) {
                     write!(self_string, "{self_digit}").unwrap();
                     write!(other_string, "{other_digit}").unwrap();
+                } else {
+                    write!(self_string, "\x1b[31m{self_digit}\x1b[0m").unwrap();
+                    write!(other_string, "\x1b[31m{other_digit}\x1b[0m").unwrap();
                 }
             }
             writeln!(self_string, "]").unwrap();
@@ -507,10 +503,11 @@ impl Integer {
         }
 
         let mut output_string = String::with_capacity(self_string.len() + other_string.len());
-        write!(output_string, "{}\n{}", self_string, other_string).unwrap();
+        write!(output_string, "{self_string}\n{other_string}").unwrap();
         output_string
     }
 
+    #[must_use]
     #[inline]
     pub fn has_carries(&self) -> bool {
         if self.0.is_empty() {
@@ -553,7 +550,7 @@ impl Integer {
         let mut carry: bool = false;
         let mut ever_carried: bool = false;
 
-        for limb in self.0.iter_mut() {
+        for limb in &mut self.0 {
             if carry {
                 ever_carried = true;
                 *limb = *limb + ONE;
@@ -625,9 +622,10 @@ impl Integer {
             }
         }
 
-        Integer(output_vec)
+        Self(output_vec)
     }
 
+    #[must_use]
     pub fn unpack(self) -> Self {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -641,7 +639,7 @@ impl Integer {
 
         let mut output: Vec<Limb> = Vec::with_capacity(self.0.len() * 2);
 
-        for limb in self.0.iter() {
+        for limb in &self.0 {
             let (low, high) = limb.unpack();
             if !low.is_empty() {
                 output.push(low);
@@ -657,19 +655,20 @@ impl Integer {
     #[inline]
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         let mut output: Vec<u8> = Vec::with_capacity(self.0.len() * 64);
-        for limb in self.0.iter() {
+        for limb in &self.0 {
             output.extend_from_slice(&limb.into_bytes());
         }
         output
     }
 
+    #[must_use]
     #[inline]
-    pub fn from_bytes(input: Vec<[u8; 64]>) -> Integer {
+    pub fn from_bytes(input: Vec<[u8; 64]>) -> Self {
         let mut output = Vec::with_capacity(input.len());
-        for limb in input.iter() {
+        for limb in &input {
             output.push(Limb::from_bytes(*limb));
         }
-        Integer(output)
+        Self(output)
     }
 
     #[inline]
@@ -681,9 +680,9 @@ impl Integer {
     }
 
     #[inline]
-    pub(crate) fn from_checkpoint(input: Checkpoint) -> (Integer, usize) {
+    pub(crate) fn from_checkpoint(input: Checkpoint) -> (Self, usize) {
         (
-            Integer::from_bytes(Integer::chop(input.integer).unwrap()).unpack(),
+            Self::from_bytes(Self::chop(input.integer).unwrap()).unpack(),
             input.iteration,
         )
     }
@@ -717,22 +716,23 @@ impl Integer {
         self.process_carries()
     }
 
+    #[must_use]
     #[inline]
     pub fn chop(data: Vec<u8>) -> Option<Vec<[u8; 64]>> {
         data.chunks(64).map(|chunk| chunk.try_into().ok()).collect()
     }
 
     pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut output_string = String::new();
-
         struct LimbRawDisplay<'a>(&'a Limb);
 
-        impl<'a> std::fmt::Display for LimbRawDisplay<'a> {
+        impl std::fmt::Display for LimbRawDisplay<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 // Delegate the formatting call to `Limb::display_raw`.
                 self.0.display_raw(f)
             }
         }
+
+        let mut output_string = String::new();
 
         for limb in self.0.iter().rev() {
             write!(output_string, "{}", LimbRawDisplay(limb))?;
@@ -775,7 +775,7 @@ impl std::ops::Add for Integer {
             output_vec.push(*self_limb + *other_limb);
         }
 
-        let mut output = Integer(output_vec);
+        let mut output = Self(output_vec);
         let ever_carried = output.process_carries();
         (output, ever_carried)
     }
@@ -881,17 +881,47 @@ pub struct PackedLimb(u8x64);
 
 pub(crate) type LimbPair = (Limb, Limb);
 
+impl PackedLimb {
+    #[inline]
+    pub(crate) fn len(&self) -> std::num::NonZeroU32 {
+        if self.0 == u8x64::splat(0) {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to get the length of an empty packed integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let (low_limb, high_limb): LimbPair = (*self).into();
+        let result = if high_limb.is_empty() {
+            low_limb.len()
+        } else {
+            high_limb.len()
+        };
+
+        #[cfg(debug_assertions)]
+        return std::num::NonZeroU32::new(result as u32).unwrap();
+
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            return std::num::NonZeroU32::new_unchecked(result as u32);
+        }
+    }
+}
+
 impl From<__m512i> for PackedLimb {
     #[inline]
     fn from(val: __m512i) -> Self {
-        PackedLimb(u8x64::from(val))
+        Self(u8x64::from(val))
     }
 }
 
 impl const From<u8x64> for PackedLimb {
     #[inline]
     fn from(val: u8x64) -> Self {
-        PackedLimb(val)
+        Self(val)
     }
 }
 
@@ -899,7 +929,7 @@ impl From<LimbPair> for PackedLimb {
     #[inline]
     fn from(val: LimbPair) -> Self {
         let limb2_shifted = unsafe { _mm512_slli_epi64(val.1.into(), 4) };
-        let output: PackedLimb = unsafe { _mm512_or_epi64(val.0.into(), limb2_shifted) }.into();
+        let output: Self = unsafe { _mm512_or_epi64(val.0.into(), limb2_shifted) }.into();
         debug_assert_eq!(
             output.0,
             unsafe { _mm512_xor_epi64(val.0.into(), limb2_shifted) }.into()
@@ -914,7 +944,7 @@ impl From<PackedLimb> for LimbPair {
     fn from(val: PackedLimb) -> Self {
         unsafe {
             let limb2_mask: __m512i = u8x64::splat(0xF0).into();
-            let limb2_shifted = _mm512_and_epi64(val.0.into(), limb2_mask);
+            let limb2_shifted = _mm512_and_si512(val.0.into(), limb2_mask);
 
             let limb1 = _mm512_xor_epi64(val.0.into(), limb2_shifted);
             let limb2 = _mm512_srli_epi64(limb2_shifted, 4);
@@ -946,26 +976,172 @@ impl From<Integer> for PackedInteger {
             }
         }
 
-        PackedInteger(limbs)
+        Self(limbs)
     }
 }
 
 impl From<PackedInteger> for Integer {
     #[inline]
     fn from(val: PackedInteger) -> Self {
+        if val.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to convert an empty packed integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
         let mut limbs: Vec<Limb> = Vec::with_capacity(val.0.len() * 2);
 
-        for packed_limbs in val.0.iter() {
+        for packed_limbs in &val.0 {
             let (limb1, limb2) = LimbPair::from(*packed_limbs);
             limbs.push(limb1);
             limbs.push(limb2);
         }
 
-        if limbs.last().unwrap() == &Limb::new() {
+        if unsafe { limbs.last().unwrap_unchecked() } == &Limb::new() {
             limbs.pop();
         }
 
-        Integer(limbs)
+        Self(limbs)
+    }
+}
+
+#[allow(unused)]
+impl PackedInteger {
+    #[inline]
+    fn len(&self) -> std::num::NonZeroUsize {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to get the length of an empty packed integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let last_limb = unsafe { self.0.last().unwrap_unchecked() };
+        let _last_limb_vec: __m512i = last_limb.0.into();
+
+        todo!()
+    }
+
+    fn fused_reverse_add_asm(&mut self, reversed: &mut Integer) -> bool {
+        let mut _ever_carried: bool = false;
+
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to reverse and add empty integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let skip_len = 64u32 - u32::from(unsafe { self.0.last().unwrap_unchecked() }.len());
+
+        if reversed.0.len() < self.0.len() {
+            debug_assert_eq!(self.0.len(), reversed.0.len() + 1);
+            reversed.0.push(Limb::new());
+            reversed.0.push(Limb::new());
+        } else if reversed.0.len() == self.0.len() {
+            reversed.0.push(Limb::new());
+        }
+
+        //reversed.0.clear();
+
+        // for (idx, limb) in self.0.iter().rev().enumerate() {
+        //     reversed.0[idx] = limb.reverse();
+        // }
+
+        // self.0
+        //     .iter()
+        //     .rev()
+        //     .map(|s| Limb(s.0.reverse()))
+        //     .collect_into(&mut reversed.0);
+
+        if reversed.0.len() != (self.0.len() + 1) {
+            #[cfg(debug_assertions)]
+            unreachable!();
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                std::hint::unreachable_unchecked();
+            }
+        }
+
+        //reversed.0.push(Limb(u8x64::splat(0)));
+
+        let ten_vector: __m512i = u8x64::splat(10).into();
+        let one_vector: __m512i = u8x64::splat(1).into();
+        let one_vector_64: __m512i = u64x8::splat(1).into();
+
+        let mut ever_carried_byte: u8 = 0;
+        let mut overflowed: u64 = 0;
+
+        const ONE_LIMB: Limb = Limb({
+            let mut arr = [0u8; 64];
+            arr[0] = 1;
+            u8x64::from_array(arr)
+        });
+
+        let rev_base_ptr = reversed.0.as_ptr().cast::<u8x64>();
+
+        for (idx, limb) in self.0.iter_mut().enumerate() {
+            let offset = (idx as u32 * 64) + skip_len;
+            unsafe {
+                let carry_mask: u64;
+                std::arch::asm!(
+                    r#"
+                    # use overflowed as a writemask so we can reuse one_zmm
+                    vpaddq {limb}{{{overflowed}}}, {limb}, {one_zmm_64}                             # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
+                    # using smaller mask sizes still clears the rest of the register
+                    kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
+                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
+                    vpaddq {limb}, {limb}, [{base_ptr} + {offset:r}]                                  # add the vectors together; we can use the quadword variant again for the same reason
+
+                    2: # carry processing loop
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_zmm}, 5                                 # find the digits that are >= 10 and store them in carry_mask_kreg
+                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
+
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
+                    jz 3f                                                                           # if there are no carries, we are done
+                    mov {ever_carried}, 1                                                           # there were carries because we didn't jump
+
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_zmm}                           # subtract 10 from those that triggered carries
+                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_zmm}                           # propogate the carries
+                    jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
+
+                    3:                                                                              # done
+                    "#,
+                    base_ptr = in(reg) rev_base_ptr, // pointer to the reversed limb
+                    // using a pointer lets us avoid loading it manually, since
+                    // `vpaddb` can just take a memory address as an input
+                    offset = in(reg) offset,
+                    limb = inout(zmm_reg) limb.0, // the limb that is getting modified
+                    overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
+                    one_zmm = in(zmm_reg) one_vector, // a vector of 1s
+                    one_zmm_64 = in(zmm_reg) one_vector_64, // a vector of 1s, but as 64-bit quadwords
+                    ten_zmm = in(zmm_reg) ten_vector, // a vector of 10s
+                    carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
+                    carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
+                    ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
+                );
+
+                overflowed = (carry_mask & 0x8000_0000_0000_0000u64 != 0).into();
+            }
+        }
+
+        // if overflowed != 0 {
+        //     self.0.push(ONE_LIMB);
+        // }
+
+        _ever_carried
     }
 }
 
