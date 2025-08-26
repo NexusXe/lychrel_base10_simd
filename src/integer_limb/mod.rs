@@ -405,23 +405,23 @@ impl Integer {
                 std::arch::asm!(
                     r#"
                     # use overflowed as a writemask so we can reuse one_zmm
-                    vpaddq {limb}{{{overflowed}}}, {limb}, [{one_zmm_q_ptr}]                         # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
+                    vpaddq {limb}{{{overflowed}}}, {limb}, [{one_q_ptr}]                             # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
                     vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; we can use the quadword variant again for the same reason
 
                     2: # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, [{ten_zmm_b_ptr}], 5                         # find the digits that are >= 10 and store them in carry_mask_kreg
+                    vpcmpub {carry_mask_kreg}, {limb}, [{ten_b_ptr}], 5                                 # find the digits that are >= 10 and store them in carry_mask_kreg
                     korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
 
                     ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
                     jz 3f                                                                           # if there are no carries, we are done
                     mov {ever_carried}, 1                                                           # there were carries because we didn't jump
 
-                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, [{ten_zmm_b_ptr}]                   # subtract 10 from those that triggered carries
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, [{ten_b_ptr}]                           # subtract 10 from those that triggered carries
                     kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, [{one_zmm_b_ptr}]                   # propogate the carries
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, [{one_b_ptr}]                           # propogate the carries
                     jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
 
                     3:                                                                              # done
@@ -432,9 +432,9 @@ impl Integer {
                     offset = in(reg) offset,
                     limb = inout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
-                    one_zmm_b_ptr = in(reg) &addition_vectors[0] as *const __m512i, // a vector of 1s
-                    one_zmm_q_ptr = in(reg) &addition_vectors[1] as *const __m512i, // a vector of 1s, but as 64-bit quadwords
-                    ten_zmm_b_ptr = in(reg) &addition_vectors[2] as *const __m512i, // a vector of 10s
+                    one_b_ptr = in(reg) &__m512i::from(u8x64::splat(1)) as *const __m512i, // a vector of 1s
+                    one_q_ptr = in(reg) &__m512i::from(u64x8::splat(1)) as *const __m512i, // a vector of 1s, but as 64-bit quadwords
+                    ten_b_ptr = in(reg) &__m512i::from(u8x64::splat(10)) as *const __m512i,
                     carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
                     carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
