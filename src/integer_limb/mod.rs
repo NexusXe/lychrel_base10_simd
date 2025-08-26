@@ -110,21 +110,28 @@ impl Limb {
         let mut digits: __m512i = __m512i::from(self.0);
         let mut carries_past_last: bool = false;
 
-        for _ in 0..64usize {
-            let mut carries = unsafe { _mm512_cmpge_epu8_mask(digits, compare) };
+        let mut carries: u64 = 0;
 
-            // "unneccesarily" repeating this 64 times seems worth it to make this branchless,
-            // but adding this makes this function comically faster for larger Integers
+        for _ in 0..8 {
+            for _ in 0..8 {
+                carries = unsafe { _mm512_cmpge_epu8_mask(digits, compare) };
+
+                // "unneccesarily" repeating this 64 times seems worth it to make this branchless,
+                // but adding this makes this function comically faster for larger Integers
+
+                digits = unsafe { _mm512_mask_sub_epi8(digits, carries, digits, compare) };
+                carries_past_last |= carries & 0x8000_0000_0000_0000_u64 != 0; // the most we can ever carry is 1, so we track if this bit is ever set; it getting set multiple times is irrelevant to the final result
+                // now add the carries to the next digit
+                digits =
+                    unsafe { _mm512_mask_add_epi8(digits, carries << 1, digits, ONE_VEC.into()) };
+            }
+            // the compiler automatically partially unrolls this carry propogation loop into chunks of 8 at a time
+            // if the early exit carry check is done every loop, the result after unrolling is very branchy
+            // instead, do it after every "run" of 8 loops
+            // TODO: is this actually faster?
             if carries == 0 {
                 break;
             }
-
-            digits = unsafe { _mm512_mask_sub_epi8(digits, carries, digits, compare) };
-            carries_past_last |= carries & 0x8000_0000_0000_0000_u64 != 0; // the most we can ever carry is 1, so we track if this bit is ever set; it getting set multiple times is irrelevant to the final result
-            carries <<= 1;
-
-            // now add the carries to the next digit
-            digits = unsafe { _mm512_mask_add_epi8(digits, carries, digits, ONE_VEC.into()) };
         }
 
         (digits.into(), carries_past_last)
@@ -208,7 +215,7 @@ impl std::ops::Add for Limb {
     fn add(self, other: Self) -> Self::Output {
         //unsafe { _mm512_add_epi8(self.into(), other.into()) }.into()
         //Limb(self.0 + other.0) // should compile to be the same
-        unsafe { _mm512_add_epi64(self.into(), other.into()) }.into() // actually is probably faster because each number will never overflow its byte boundary
+        unsafe { _mm512_add_epi64(self.into(), other.into()) }.into() // use larger object size because each number will never overflow its byte boundary
     }
 }
 

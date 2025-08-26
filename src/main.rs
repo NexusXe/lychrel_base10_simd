@@ -221,6 +221,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if args.contains(&"--bench".to_string()) {
         eprintln!("Performing benchmark run.");
         LIMIT_SHORT
+    } else if args.contains(&"--long-bench".to_string()) {
+        eprintln!("Performing long benchmark run.");
+        LIMIT_SHORT * 2
     } else {
         LIMIT
     };
