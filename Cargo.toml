@@ -55,4 +55,5 @@ opt-level = 2
 overflow-checks = true
 debug-assertions = true
 lto = true
+panic = "unwind"
 rustflags = ["-C", "force-frame-pointers=yes"]
