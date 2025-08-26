@@ -36,7 +36,7 @@ pub struct StatusReport {
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
-const LOG_FREQUENCY_EXP: usize = 10;
+const LOG_FREQUENCY_EXP: usize = 14;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
@@ -113,7 +113,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_process_affinity([9]); // fastest X3D core, upper thread
-    
+
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
 

@@ -384,19 +384,11 @@ impl Integer {
         let mut ever_carried_byte: u8 = 0;
         let mut overflowed: u64 = 0;
 
-        const ONE_LIMB: Limb = Limb({
-            let mut arr = [0u8; 64];
-            arr[0] = 1;
-            u8x64::from_array(arr)
-        });
-
         let rev_base_ptr = reversed.0.as_ptr().cast::<u8x64>();
 
-        let one_vector_b = __m512i::from(u64x8::splat(1));
-        let one_vector_q = __m512i::from(u64x8::splat(1));
-        let ten_vector_b = __m512i::from(u64x8::splat(10));
-        
-        let addition_vectors: [__m512i; 3] = [one_vector_b, one_vector_q, ten_vector_b];
+        const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
+        //const ONE_VECTOR_Q: u64x8 = u64x8::splat(1);
+        const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
 
         for (idx, limb) in self.0.iter_mut().enumerate() {
             let offset = (idx * 64) + skip_len;
@@ -405,23 +397,23 @@ impl Integer {
                 std::arch::asm!(
                     r#"
                     # use overflowed as a writemask so we can reuse one_zmm
-                    vpaddq {limb}{{{overflowed}}}, {limb}, [{one_q_ptr}]                             # add one if overflowed is set; we can use the quadword variant because addition will never cross byte boundaries
+                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; we can use the quadword variant again for the same reason
-
+                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; use quadword variant because
+                                                                                                    # the addition can't cross byte boundaries
                     2: # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, [{ten_b_ptr}], 5                                 # find the digits that are >= 10 and store them in carry_mask_kreg
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
                     korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
 
                     ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
                     jz 3f                                                                           # if there are no carries, we are done
                     mov {ever_carried}, 1                                                           # there were carries because we didn't jump
 
-                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, [{ten_b_ptr}]                           # subtract 10 from those that triggered carries
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_b}                             # subtract 10 from those that triggered carries
                     kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, [{one_b_ptr}]                           # propogate the carries
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_b}                             # propogate the carries
                     jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
 
                     3:                                                                              # done
@@ -430,11 +422,10 @@ impl Integer {
                     // using a pointer lets us avoid loading it manually, since
                     // `vpaddb` can just take a memory address as an input
                     offset = in(reg) offset,
-                    limb = inout(zmm_reg) limb.0, // the limb that is getting modified
+                    limb = inlateout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
-                    one_b_ptr = in(reg) &__m512i::from(u8x64::splat(1)) as *const __m512i, // a vector of 1s
-                    one_q_ptr = in(reg) &__m512i::from(u64x8::splat(1)) as *const __m512i, // a vector of 1s, but as 64-bit quadwords
-                    ten_b_ptr = in(reg) &__m512i::from(u8x64::splat(10)) as *const __m512i,
+                    one_b = in(zmm_reg) ONE_VECTOR_B, // a vector of 1s as 8-bit bytes
+                    ten_b = in(zmm_reg) TEN_VECTOR_B, // a vector of 10s as 8-bit bytes
                     carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
                     carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
@@ -445,7 +436,11 @@ impl Integer {
         }
 
         if overflowed != 0 {
-            self.0.push(ONE_LIMB);
+            self.0.push(Limb({
+                let mut arr = [0u8; 64];
+                arr[0] = 1;
+                u8x64::from_array(arr)
+            }));
         }
         ever_carried_byte != 0
     }
