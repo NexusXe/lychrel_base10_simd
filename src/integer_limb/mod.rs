@@ -381,10 +381,6 @@ impl Integer {
 
         //reversed.0.push(Limb(u8x64::splat(0)));
 
-        let ten_vector: __m512i = u8x64::splat(10).into();
-        let one_vector: __m512i = u8x64::splat(1).into();
-        let one_vector_64: __m512i = u64x8::splat(1).into();
-
         let mut ever_carried_byte: u8 = 0;
         let mut overflowed: u64 = 0;
 
@@ -430,9 +426,9 @@ impl Integer {
                     offset = in(reg) offset,
                     limb = inout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
-                    one_zmm = in(zmm_reg) one_vector, // a vector of 1s
-                    one_zmm_64 = in(zmm_reg) one_vector_64, // a vector of 1s, but as 64-bit quadwords
-                    ten_zmm = in(zmm_reg) ten_vector, // a vector of 10s
+                    one_zmm = in(zmm_reg) __m512i::from(u8x64::splat(1)), // a vector of 1s
+                    one_zmm_64 = in(zmm_reg) __m512i::from(u64x8::splat(1)), // a vector of 1s, but as 64-bit quadwords
+                    ten_zmm = in(zmm_reg) __m512i::from(u8x64::splat(10)), // a vector of 10s
                     carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
                     carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
                     ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
