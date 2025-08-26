@@ -407,7 +407,7 @@ impl Integer {
                                                                                                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, [{rev_ptr} + {offset} * 8]                                # add the vectors together; use quadword variant because
+                    vpaddq {limb}, {limb}, [{rev_ptr} + {offset} * 8]                               # add the vectors together; use quadword variant because
                                                                                                     # the addition can't cross byte boundaries
 
                     2:                                                                              # carry processing loop
