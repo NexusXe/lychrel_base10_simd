@@ -410,7 +410,7 @@ impl Integer {
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
                     vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; use quadword variant because
                                                                                                     # the addition can't cross byte boundaries
-                                                                                                    
+
                     2:                                                                              # carry processing loop
                     vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
                     korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
@@ -622,7 +622,7 @@ impl Integer {
                     output_vec.push(limb_pair[0]);
                 }
                 _ => {
-                    break;
+                    unreachable!();
                 }
             }
         }
