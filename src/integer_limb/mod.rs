@@ -391,14 +391,13 @@ impl Integer {
         let mut ever_carried_byte: u8 = 0;
         let mut overflowed: u64 = 0;
 
-        let rev_base_ptr = reversed.0.as_ptr().cast::<u8x64>();
+        let rev_offset_ptr: *const u8 = unsafe { reversed.0.as_ptr().cast::<u8>().add(skip_len) };
 
         const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
         //const ONE_VECTOR_Q: u64x8 = u64x8::splat(1);
         const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
 
         for (idx, limb) in self.0.iter_mut().enumerate() {
-            let offset = (idx * 64) + skip_len;
             unsafe {
                 let carry_mask: u64;
                 std::arch::asm!(
@@ -408,7 +407,7 @@ impl Integer {
                                                                                                     # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; use quadword variant because
+                    vpaddq {limb}, {limb}, [{rev_ptr} + {offset} * 8]                                # add the vectors together; use quadword variant because
                                                                                                     # the addition can't cross byte boundaries
 
                     2:                                                                              # carry processing loop
@@ -426,10 +425,10 @@ impl Integer {
 
                     3:                                                                              # done
                     "#,
-                    base_ptr = in(reg) rev_base_ptr, // pointer to the reversed limb
+                    rev_ptr = in(reg) rev_offset_ptr, // pointer to the reversed limb
                     // using a pointer lets us avoid loading it manually, since
                     // `vpaddb` can just take a memory address as an input
-                    offset = in(reg) offset,
+                    offset = in(reg) idx * 8,
                     limb = inlateout(zmm_reg) limb.0, // the limb that is getting modified
                     overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
                     one_b = in(zmm_reg) ONE_VECTOR_B, // a vector of 1s as 8-bit bytes
