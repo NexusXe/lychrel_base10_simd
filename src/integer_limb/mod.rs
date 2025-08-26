@@ -403,14 +403,15 @@ impl Integer {
                 let carry_mask: u64;
                 std::arch::asm!(
                     r#"
-                    # use overflowed as a writemask so we can reuse one_zmm
+                                                                                                    # use overflowed as a writemask so we can reuse one_zmm & not branch
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
-                    # using smaller mask sizes still clears the rest of the register
+                                                                                                    # using smaller mask sizes still clears the rest of the register
                     kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
                     kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
                     vpaddq {limb}, {limb}, [{base_ptr} + {offset}]                                  # add the vectors together; use quadword variant because
                                                                                                     # the addition can't cross byte boundaries
-                    2: # carry processing loop
+                                                                                                    
+                    2:                                                                              # carry processing loop
                     vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
                     korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
 
