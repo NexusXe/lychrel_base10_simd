@@ -112,7 +112,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
     #[cfg(not(debug_assertions))]
-    let _ = affinity::set_process_affinity([9]); // fastest X3D core, upper thread
+    let _ = affinity::set_process_affinity([1, 5]); // fastest X3D cores, upper threads
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
@@ -232,7 +232,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iteration_handle = thread::spawn(move || {
         #[cfg(not(debug_assertions))]
-        let _ = affinity::set_thread_affinity([8]); // fastest X3D core, lower thread
+        let _ = affinity::set_thread_affinity([0, 4]); // fastest X3D cores, lower threads
 
         iterate(starting_iteration..limit, initial_value, Some(tx))
     });
