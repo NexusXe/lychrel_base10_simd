@@ -36,7 +36,7 @@ pub struct StatusReport {
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
-const LOG_FREQUENCY_EXP: usize = 14;
+const LOG_FREQUENCY_EXP: usize = 11;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
@@ -46,7 +46,6 @@ fn iterate(
     tx: Option<Sender<StatusReport>>,
 ) -> IterationResult {
     let mut current_iteration: Integer = starting_integer;
-    let mut reverse_buf: Integer = Integer(vec![Limb::new(); current_iteration.0.len()]);
 
     let mut carried: bool = false;
     let mut i: usize = range.start;
@@ -63,7 +62,7 @@ fn iterate(
                 break;
             }
         }
-        carried = current_iteration.fused_reverse_add_asm(&mut reverse_buf);
+        carried = current_iteration.fused_reverse_add_asm_interleave();
         if unlikely(i.is_multiple_of(LOG_MASK)) {
             let report = StatusReport {
                 iteration: i,
@@ -112,7 +111,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
     #[cfg(not(debug_assertions))]
-    let _ = affinity::set_process_affinity([1, 5]); // fastest X3D cores, upper threads
+    //let _ = affinity::set_process_affinity([1, 5]); // fastest X3D cores, upper threads
+    let _ = affinity::set_process_affinity([5]);
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
@@ -232,8 +232,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iteration_handle = thread::spawn(move || {
         #[cfg(not(debug_assertions))]
-        let _ = affinity::set_thread_affinity([0, 4]); // fastest X3D cores, lower threads
-
+        //let _ = affinity::set_thread_affinity([0, 4]); // fastest X3D cores, lower threads
+        let _ = affinity::set_thread_affinity([4]); // fastest X3D cores, lower threads
         iterate(starting_iteration..limit, initial_value, Some(tx))
     });
 
