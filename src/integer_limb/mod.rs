@@ -466,7 +466,7 @@ impl Integer {
         }
     }
 
-    pub(crate) fn fused_reverse_add_asm_interleave(&mut self) -> bool {
+    pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
@@ -500,8 +500,9 @@ impl Integer {
 
         self.0.push(Limb::new()); // padding
 
-        let mut ever_carried_byte: u8 = 0;
-        let mut overflowed: u64 = 0;
+        let mut overflowed = false;
+        let mut ever_carried = false;
+        
 
         const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
         const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
@@ -515,89 +516,43 @@ impl Integer {
             // skip the last limb since it's padding
 
             unsafe {
+                
                 let limb_ptr = &limb.0 as *const u8x64;
-                let carry_mask: u64;
-                std::arch::asm!(
-                    r#"
-                    jmp 4f
+                let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
 
-                    5:
-                    .byte   0
-                    .byte   0
-                    .byte   0
-                    .byte   0
-                    .byte   128
-                    .byte   64
-                    .byte   32
-                    .byte   16
+                limb.0 = (limb.0 << 4) >> 4;
 
-                    6:
-                    .byte 15
-                    .byte 15
-                    .byte 15
-                    .byte 15
+                *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), ONE_VECTOR_B.into()).into();
+                overflowed = false;
+                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
-                    4:
-                    vmovdqu64 {rev}, [{limb_ptr} + {skip_len}]                                      # offset load the reversed limb, which is also interspersed with irrelevant limb data
-                                                                                                    # AVX-512 lacks instructions for bytewise bit shifts... you're telling me that they
-                                                                                                    # have the silicon space to implement this super niche multi-iteration 8x8 bit vector 
-                                                                                                    # math operation that "computes an affine transformation in the Galois Field 2**8"
-                                                                                                    # but they cant give me a bit shift that doesn't need to read from memory? 
-                    vgf2p8affineqb {rev}, {rev}, qword ptr [rip + 5b]{{1to8}}, 0                    # shift the reversed limb left 4 bits using magic
-                    
-                    vpandd {limb}, {limb}, dword ptr [rip + 6b]{{1to16}}                            # mask off the high bits to only keep the low (useful) bits of the working limb
-                                                                                                    # vpandq causes an illegal opcode exception? strange
-                                                                                                    # use overflowed as a writemask so we can reuse one_zmm & not branch
-                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
+                loop {
+                    let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), TEN_VECTOR_B.into());
+                    if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                        overflowed = true;
+                    } else if carry_mask == 0 {
+                        cold_path();
+                        break;
+                    }
 
-                                                                                                    # using smaller mask sizes still clears the rest of the register
-                    kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
-                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, {rev}                                                    # add the vectors together; use quadword variant because
-                                                                                                    # the addition can't cross byte boundaries
+                    ever_carried = true;
 
-                    2:                                                                              # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
-                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
-
-                    ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
-                    jz 3f                                                                           # if there are no carries, we are done
-                    mov {ever_carried}, 1                                                           # there were carries because we didn't jump
-
-                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_b}                             # subtract 10 from those that triggered carries
-                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_b}                             # propogate the carries
-                    jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
-
-                    3:                                                                              # done
-                    "#,
-                    limb = inout(zmm_reg) limb.0, // the limb that is getting modified
-                    rev = out(zmm_reg) _, // scratch register for deinterleaving the reversed limb
-                    limb_ptr = in(reg) limb_ptr, // pointer to the current limb
-                    skip_len = in(reg) skip_len, // number of bytes to skip
-                    overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
-                    one_b = in(zmm_reg) ONE_VECTOR_B, // a vector of 1s as 8-bit bytes
-                    ten_b = in(zmm_reg) TEN_VECTOR_B, // a vector of 10s as 8-bit bytes
-                    carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
-                    carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
-                    ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
-                    options(nostack)
-                );
-
-                overflowed = (carry_mask & 0x8000_0000_0000_0000_u64 != 0).into();
+                    *limb = _mm512_mask_sub_epi8(limb.0.into(), carry_mask, limb.0.into(), TEN_VECTOR_B.into() ).into();
+                    *limb = _mm512_mask_add_epi8(limb.0.into(), carry_mask << 1, limb.0.into(), ONE_VECTOR_B.into()).into();
+                }
             }
         }
 
-        if overflowed == 0 {
-            self.0.pop();
-        } else {
+        if overflowed {
             *unsafe { self.0.last_mut().unwrap_unchecked() } = Limb({
                 let mut arr = [0u8; 64];
                 arr[0] = 1;
                 u8x64::from_array(arr)
             });
+        } else {
+            self.0.pop();
         }
-        ever_carried_byte != 0
+        ever_carried
     }
 
     #[inline]

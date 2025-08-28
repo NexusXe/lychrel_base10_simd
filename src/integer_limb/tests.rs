@@ -524,66 +524,66 @@ fn test_fused_reverse_add_asm_simple_interleave() {
     assert!(ever_carried);
 }
 
-// #[test]
-// fn test_fused_reverse_add_asm_simple_interleave_2() {
-//     let mut integer = Integer(vec![Limb({
-//         let mut arr = [0u8; 64];
-//         arr[0] = 5;
-//         arr[63] = 6;
-//         u8x64::from(arr)
-//     })]);
+#[test]
+fn test_fused_reverse_add_asm_simple_interleave_2() {
+    let mut integer = Integer(vec![Limb({
+        let mut arr = [0u8; 64];
+        arr[0] = 5;
+        arr[63] = 6;
+        u8x64::from(arr)
+    })]);
 
-//     let ever_carried = integer.fused_reverse_add_asm_interleave();
-//     assert_eq!(
-//         integer,
-//         integer!("11000000000000000000000000000000000000000000000000000000000000011")
-//     );
-//     assert!(ever_carried);
-// }
+    let ever_carried = integer.fused_reverse_add_asm_interleave();
+    assert_eq!(
+        integer,
+        integer!("11000000000000000000000000000000000000000000000000000000000000011")
+    );
+    assert!(ever_carried);
+}
 
-// #[test]
-// fn test_fused_reverse_add_asm_interleave() {
-//     let mut integer1 = integer!("12345678");
-//     let ever_carried = integer1.fused_reverse_add_asm_interleave();
-//     assert_eq!(integer1, integer!("99999999"));
-//     assert!(!ever_carried);
+#[test]
+fn test_fused_reverse_add_asm_interleave() {
+    let mut integer1 = integer!("12345678");
+    let ever_carried = integer1.fused_reverse_add_asm_interleave();
+    assert_eq!(integer1, integer!("99999999"));
+    assert!(!ever_carried);
 
-//     let mut integer2 = integer!("99999999");
-//     let ever_carried = integer2.fused_reverse_add_asm_interleave();
-//     assert_eq!(integer2, integer!("199999998"));
-//     assert!(ever_carried);
+    let mut integer2 = integer!("99999999");
+    let ever_carried = integer2.fused_reverse_add_asm_interleave();
+    assert_eq!(integer2, integer!("199999998"));
+    assert!(ever_carried);
 
-//     let mut integer3 = integer!("11111111111111111111111111111111");
-//     let ever_carried = integer3.fused_reverse_add_asm_interleave();
-//     assert_eq!(integer3, integer!("22222222222222222222222222222222"));
-//     assert!(!ever_carried);
+    let mut integer3 = integer!("11111111111111111111111111111111");
+    let ever_carried = integer3.fused_reverse_add_asm_interleave();
+    assert_eq!(integer3, integer!("22222222222222222222222222222222"));
+    assert!(!ever_carried);
 
-//     let mut integer4: Integer = Integer(vec![Limb(u8x64::splat(9))]);
-//     let ever_carried = integer4.fused_reverse_add_asm_interleave();
-//     assert_eq!(
-//         integer4,
-//         integer!("19999999999999999999999999999999999999999999999999999999999999998")
-//     );
-//     assert!(ever_carried);
-// }
+    let mut integer4: Integer = Integer(vec![Limb(u8x64::splat(9))]);
+    let ever_carried = integer4.fused_reverse_add_asm_interleave();
+    assert_eq!(
+        integer4,
+        integer!("19999999999999999999999999999999999999999999999999999999999999998")
+    );
+    assert!(ever_carried);
+}
 
-// #[test]
-// fn test_asm_bug_interleave() {
-//     let mut integer: Integer = integer!(
-//         "73482637274560972997068201320438586559407609388647198764094354927116546966373665141586612278184850999294014223899962612538861846880665005592035821032128969264317433200141231772473459431601149579858274630230771087005620368093635487002423793478228705697976867255505359764767301851874010697230735809434080225388354718502970643860097"
-//     );
-//     let ever_carried = integer.fused_reverse_add_asm_interleave();
-//     let expected = integer!(
-//         "152489471882481554742456553528482077413110888989695014574471101722467102243241644792368899717917271077747653310202612690556565050527950903186146434527566396977531533433612578069455582444454179129914883495047654608632620200334684786908271980699897219854614234220066532710116348641048699087901231378017482535674434646409517917488534"
-//     );
-//     assert_eq!(
-//         integer,
-//         expected,
-//         "error: lhs != rhs:\n{}",
-//         integer.show_differences(&expected)
-//     );
-//     assert!(ever_carried);
-// }
+#[test]
+fn test_asm_bug_interleave() {
+    let mut integer: Integer = integer!(
+        "73482637274560972997068201320438586559407609388647198764094354927116546966373665141586612278184850999294014223899962612538861846880665005592035821032128969264317433200141231772473459431601149579858274630230771087005620368093635487002423793478228705697976867255505359764767301851874010697230735809434080225388354718502970643860097"
+    );
+    let ever_carried = integer.fused_reverse_add_asm_interleave();
+    let expected = integer!(
+        "152489471882481554742456553528482077413110888989695014574471101722467102243241644792368899717917271077747653310202612690556565050527950903186146434527566396977531533433612578069455582444454179129914883495047654608632620200334684786908271980699897219854614234220066532710116348641048699087901231378017482535674434646409517917488534"
+    );
+    assert_eq!(
+        integer,
+        expected,
+        "error: lhs != rhs:\n{}",
+        integer.show_differences(&expected)
+    );
+    assert!(ever_carried);
+}
 
 // #[test]
 // fn test_asm_random_interleave() {
