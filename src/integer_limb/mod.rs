@@ -139,8 +139,8 @@ impl Limb {
 
     #[inline]
     fn reverse(self) -> Self {
-        let self_u8x64: u8x64 = self.into();
-        self_u8x64.reverse().into()
+        let self_u8x64: u8x64 = self.0;
+        Limb(self_u8x64.reverse())
     }
 
     #[inline]
@@ -545,7 +545,7 @@ impl Integer {
                                                                                                     # but they cant give me a bit shift that doesn't need to read from memory? 
                     vgf2p8affineqb {rev}, {rev}, qword ptr [rip + 5b]{{1to8}}, 0                    # shift the reversed limb left 4 bits using magic
                     
-                    vandps {limb}, {limb}, dword ptr [rip + 6b]{{1to16}}                            # mask off the high bits to only keep the low (useful) bits of the working limb
+                    vpandd {limb}, {limb}, dword ptr [rip + 6b]{{1to16}}                            # mask off the high bits to only keep the low (useful) bits of the working limb
                                                                                                     # vpandq causes an illegal opcode exception? strange
                                                                                                     # use overflowed as a writemask so we can reuse one_zmm & not branch
                     vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
