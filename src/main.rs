@@ -36,7 +36,7 @@ pub struct StatusReport {
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
 const INITIAL_SEED: &str = "196";
-const LOG_FREQUENCY_EXP: usize = 11;
+const LOG_FREQUENCY_EXP: usize = 14;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
@@ -45,6 +45,7 @@ fn iterate(
     starting_integer: Integer,
     tx: Option<Sender<StatusReport>>,
 ) -> IterationResult {
+    let _ = affinity::set_thread_affinity([18]); // fastest X3D cores, lower threads
     let mut current_iteration: Integer = starting_integer;
 
     let mut carried: bool = false;
@@ -111,8 +112,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
     #[cfg(not(debug_assertions))]
-    //let _ = affinity::set_process_affinity([1, 5]); // fastest X3D cores, upper threads
-    let _ = affinity::set_process_affinity([5]);
+    let _ = affinity::set_process_affinity([4]);
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
@@ -232,8 +232,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iteration_handle = thread::spawn(move || {
         #[cfg(not(debug_assertions))]
-        //let _ = affinity::set_thread_affinity([0, 4]); // fastest X3D cores, lower threads
-        let _ = affinity::set_thread_affinity([4]); // fastest X3D cores, lower threads
+        let _ = affinity::set_thread_affinity([4]);
+
         iterate(starting_iteration..limit, initial_value, Some(tx))
     });
 
@@ -252,7 +252,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             unsafe { std::intrinsics::fdiv_fast(LOG_MASK as f32, elapsed_time.as_secs_f32()) };
 
         println!(
-            "{log_idx}:{} {i}; {rate:} iter/sec",
+            "{}:{} {i}; {rate:} iter/sec",
+            if log_idx == 0 {16} else {log_idx},
             if log_idx < 10 { " " } else { "" }
         );
 
