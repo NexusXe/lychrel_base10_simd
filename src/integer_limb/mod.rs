@@ -444,7 +444,7 @@ impl Integer {
         // (this is based on data from Zen 4, but it is likely still true)
         let lhs_output = *lhs ^ rhs.reverse() << 4;
         let rhs_output = *rhs ^ lhs.reverse() << 4;
-    
+
         *lhs = lhs_output;
         *rhs = rhs_output;
     }
@@ -486,7 +486,7 @@ impl Integer {
         }
 
         self.0.push(Limb::new()); // padding
-
+        
 
         let mut overflowed = false;
         let mut ever_carried = false;
@@ -507,7 +507,7 @@ impl Integer {
             unsafe {
                 
                 let limb_ptr = &limb.0 as *const u8x64;
-                
+
                 let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
@@ -516,7 +516,7 @@ impl Integer {
 
                 *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), ONE_VECTOR_B.into()).into();
                 overflowed = false;
-                
+
                 // if first_half {
                 //     // broadcast the result, without processing the carries, to the second half
 
@@ -599,7 +599,7 @@ impl Integer {
         }
 
         let limb_count: usize = self.0.len();
-        
+
         self.0.push(Limb::new()); // padding
 
         let mut ever_carried_byte: u8 = 0;

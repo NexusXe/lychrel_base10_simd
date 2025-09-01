@@ -45,7 +45,6 @@ fn iterate(
     starting_integer: Integer,
     tx: Option<Sender<StatusReport>>,
 ) -> IterationResult {
-
     let mut current_iteration: Integer = starting_integer;
 
     let mut carried: bool = false;
@@ -253,7 +252,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!(
             "{}:{} {i}; {rate:} iter/sec",
-            if log_idx == 0 {16} else {log_idx},
+            if log_idx == 0 { 16 } else { log_idx },
             if log_idx < 10 { " " } else { "" }
         );
 
