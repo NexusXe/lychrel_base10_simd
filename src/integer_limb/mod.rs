@@ -378,10 +378,6 @@ impl Integer {
                 let left_limb_ptr = limbs_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
-                let data_lhs_needs: u8x64 = _mm512_loadu_epi8(rev_ptr.byte_add(skip_len) as *const i8).into();
-                let data_rhs_needs: u8x64 = _mm512_loadu_epi8(limbs_ptr.byte_sub(skip_len) as *const i8).into();
-                eprintln!("rev would be:\n{0}", Limb(data_lhs_needs));
-
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
 
@@ -399,15 +395,12 @@ impl Integer {
         const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
         const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
 
-        for (idx, limb) in self
+        for (_, limb) in self
             .0
             .iter_mut()
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
-            // skip the last limb since it's padding
-
-            // let first_half: bool = idx <= limb_count.div_floor(2);
 
             unsafe {
                 
@@ -424,17 +417,6 @@ impl Integer {
 
                 *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), ONE_VECTOR_B.into()).into();
                 overflowed = false;
-
-                // if first_half {
-                //     // broadcast the result, without processing the carries, to the second half
-
-                //     // get the pointer of the mirror limb
-                //     let mirror_limb_offset = limb_count - (2 * idx) - 1;
-                //     dbg!(mirror_limb_offset);
-                //     let mirror_limb_ptr: *mut u8x64 = limb_ptr.add(mirror_limb_offset) as *mut u8x64;
-                //     // copy the result to the mirror limb
-                //     *mirror_limb_ptr = (*limb).reverse().into();
-                // }
 
                 loop {
                     let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), TEN_VECTOR_B.into());
