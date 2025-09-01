@@ -338,105 +338,6 @@ impl Integer {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    #[inline]
-    pub(crate) fn fused_reverse_add_asm(&mut self, reversed: &mut Self) -> bool {
-        if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse and add empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
-        }
-
-        let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
-
-        if reversed.0.len() < self.0.len() {
-            debug_assert_eq!(self.0.len(), reversed.0.len() + 1);
-            reversed.0.push(Limb::new());
-            reversed.0.push(Limb::new());
-        } else if reversed.0.len() == self.0.len() {
-            reversed.0.push(Limb::new());
-        }
-
-        for (idx, limb) in self.0.iter().rev().enumerate() {
-            reversed.0[idx] = limb.reverse();
-        }
-
-        if reversed.0.len() != (self.0.len() + 1) {
-            #[cfg(debug_assertions)]
-            unreachable!();
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                std::hint::unreachable_unchecked();
-            }
-        }
-
-        let mut ever_carried_byte: u8 = 0;
-        let mut overflowed: u64 = 0;
-
-        let rev_offset_ptr: *const u8 = unsafe { reversed.0.as_ptr().cast::<u8>().add(skip_len) };
-
-        const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
-        const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
-
-        for (idx, limb) in self.0.iter_mut().enumerate() {
-            unsafe {
-                let carry_mask: u64;
-                std::arch::asm!(
-                    r#"
-                                                                                                    # use overflowed as a writemask so we can reuse one_zmm & not branch
-                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
-                                                                                                    # using smaller mask sizes still clears the rest of the register
-                    kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
-                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
-                    vpaddq {limb}, {limb}, [{rev_ptr} + {offset} * 8]                               # add the vectors together; use quadword variant because
-                                                                                                    # the addition can't cross byte boundaries
-
-                    2:                                                                              # carry processing loop
-                    vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
-                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
-
-                    ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
-                    jz 3f                                                                           # if there are no carries, we are done
-                    mov {ever_carried}, 1                                                           # there were carries because we didn't jump
-
-                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_b}                             # subtract 10 from those that triggered carries
-                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
-                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_b}                             # propogate the carries
-                    jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
-
-                    3:                                                                              # done
-                    "#,
-                    rev_ptr = in(reg) rev_offset_ptr, // pointer to the reversed limb
-                    // using a pointer lets us avoid loading it manually, since
-                    // `vpaddb` can just take a memory address as an input
-                    offset = in(reg) idx * 8,
-                    limb = inlateout(zmm_reg) limb.0, // the limb that is getting modified
-                    overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
-                    one_b = in(zmm_reg) ONE_VECTOR_B, // a vector of 1s as 8-bit bytes
-                    ten_b = in(zmm_reg) TEN_VECTOR_B, // a vector of 10s as 8-bit bytes
-                    carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
-                    carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
-                    ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
-                );
-
-                overflowed = (carry_mask & 0x8000_0000_0000_0000_u64 != 0).into();
-            }
-        }
-
-        if overflowed != 0 {
-            self.0.push(Limb({
-                let mut arr = [0u8; 64];
-                arr[0] = 1;
-                u8x64::from_array(arr)
-            }));
-        }
-        ever_carried_byte != 0
-    }
-
     fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
         // logically these are just bitwise ANDs; however, because the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
@@ -479,6 +380,7 @@ impl Integer {
 
                 let data_lhs_needs: u8x64 = _mm512_loadu_epi8(rev_ptr.byte_add(skip_len) as *const i8).into();
                 let data_rhs_needs: u8x64 = _mm512_loadu_epi8(limbs_ptr.byte_sub(skip_len) as *const i8).into();
+                eprintln!("rev would be:\n{0}", Limb(data_lhs_needs));
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
@@ -513,8 +415,10 @@ impl Integer {
 
                 let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
                 //let reversed_limb: u8x64 = *limb_ptr >> 4;
+                eprintln!("rev ended up being:\n{0}", Limb(reversed_limb));
 
                 limb.0 = (limb.0 << 4) >> 4;
+                eprintln!("lmb ended up being:\n{0}", Limb(limb.0));
 
                 *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
