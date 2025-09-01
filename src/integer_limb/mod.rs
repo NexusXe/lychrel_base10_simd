@@ -193,6 +193,17 @@ impl Limb {
         }
         Ok(())
     }
+
+    /// A "Simple Example" for "byte-granularity bit rotate"
+    /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
+    #[inline]
+    pub(crate) fn ror4_galois(input: u8x64) -> u8x64 {
+        let input_vec: __m512i = input.into();
+        unsafe {
+            let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
+            _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
+        }
+    }
 }
 
 impl Default for Limb {
@@ -328,7 +339,7 @@ impl Integer {
     }
 
     #[inline]
-    pub fn fused_reverse_add_asm(&mut self, reversed: &mut Self) -> bool {
+    pub(crate) fn fused_reverse_add_asm(&mut self, reversed: &mut Self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse and add empty integer");
@@ -428,15 +439,18 @@ impl Integer {
 
     pub(crate) fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
         fn reverse_shift(input: &u8x64) -> u8x64 {
-            use std::mem::transmute;
-            let rev = input.reverse();
-            let rev_u64x8: u64x8 = unsafe { transmute(rev) };
-            unsafe { transmute(rev_u64x8 << 4) }
+            input.reverse() << 4
         }
 
-        let lhs_output = *lhs | reverse_shift(rhs);
-        let rhs_output = *rhs | reverse_shift(lhs);
-
+        // logically these are just bitwise ANDs; however, because the dst register
+        // is the same as a src register, specifically VPXOR can have a much lower
+        // latency and (somehow) doesn't use an FPU pipe
+        // (this is based on data from Zen 4, but it is likely still true)
+        let lhs_output = *lhs ^ rhs.reverse() << 4;
+        let rhs_output = *rhs ^ lhs.reverse() << 4;
+        // use galois field affine transformation to rotate the bits of lhs_output 4 to the right
+        //let rhs_output_galois =  Limb::ror4_galois(lhs_output).reverse(); 
+    
         *lhs = lhs_output;
         *rhs = rhs_output;
     }
@@ -507,7 +521,7 @@ impl Integer {
         const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
         const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
 
-        for (_, limb) in self
+        for (idx, limb) in self
             .0
             .iter_mut()
             .enumerate()
@@ -515,16 +529,29 @@ impl Integer {
         {
             // skip the last limb since it's padding
 
+            // let first_half: bool = idx <= limb_count.div_floor(2);
+
             unsafe {
                 
                 let limb_ptr = &limb.0 as *const u8x64;
+                
                 let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
+                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+
                 *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), ONE_VECTOR_B.into()).into();
                 overflowed = false;
-                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+                
+                // if first_half {
+                //     // broadcast the result, without processing the carries, to the second half
+
+                //     // get the pointer of the mirror limb
+                //     let mirror_limb_ptr: *mut u8x64 = limb_ptr.add(limb_count - (2 * idx) - 1) as *mut u8x64;
+                //     // copy the result to the mirror limb
+                //     *mirror_limb_ptr = (*limb).into();
+                // }
 
                 loop {
                     let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), TEN_VECTOR_B.into());
@@ -553,6 +580,140 @@ impl Integer {
             self.0.pop();
         }
         ever_carried
+    }
+
+    pub(crate) fn fused_reverse_add_asm_interleave_old(&mut self) -> bool {
+        // instead of reversing into a seperate vector, reverse and pack into the original limb
+
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to reverse and add empty integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let total_limbs = self.0.len();
+
+        let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+
+        let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
+        let rev_ptr = &mut self.0.last_mut().unwrap().0 as *mut u8x64;
+
+        for i in 0..total_limbs.div_ceil(2) {
+            unsafe {
+                let left_limb_ptr = limbs_ptr.add(i);
+                let right_limb_ptr = rev_ptr.sub(i);
+
+                Self::reverse_interleave_x2(&mut *left_limb_ptr, &mut *right_limb_ptr);
+            }
+        }
+
+        let limb_count: usize = self.0.len();
+        
+
+        self.0.push(Limb::new()); // padding
+
+        let mut ever_carried_byte: u8 = 0;
+        let mut overflowed: u64 = 0;
+
+        const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
+        const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
+
+        for (_, limb) in self
+            .0
+            .iter_mut()
+            .enumerate()
+            .take_while(|(idx, _)| idx < &limb_count)
+        {
+            // skip the last limb since it's padding
+
+            unsafe {
+                let limb_ptr = &limb.0 as *const u8x64;
+                let carry_mask: u64;
+                std::arch::asm!(
+                    r#"
+                    jmp 4f
+
+                    5:
+                    .byte   0
+                    .byte   0
+                    .byte   0
+                    .byte   0
+                    .byte   128
+                    .byte   64
+                    .byte   32
+                    .byte   16
+
+                    6:
+                    .byte 15
+                    .byte 15
+                    .byte 15
+                    .byte 15
+
+                    4:
+                    vmovdqu64 {rev}, [{limb_ptr} + {skip_len}]                                      # offset load the reversed limb, which is also interspersed with irrelevant limb data
+                                                                                                    # AVX-512 lacks instructions for bytewise bit shifts... you're telling me that they
+                                                                                                    # have the silicon space to implement this super niche multi-iteration 8x8 bit vector 
+                                                                                                    # math operation that "computes an affine transformation in the Galois Field 2**8"
+                                                                                                    # but they cant give me a bit shift that doesn't need to read from memory? 
+                     vgf2p8affineqb{rev}, {rev}, qword ptr [rip + 5b]{{1to8}}, 0                    # shift the reversed limb left 4 bits using magic
+                    
+                    vpandd {limb}, {limb}, dword ptr [rip + 6b]{{1to16}}                            # mask off the high bits to only keep the low (useful) bits of the working limb
+                                                                                                    # vpandq causes an illegal opcode exception? strange
+                                                                                                    # use overflowed as a writemask so we can reuse one_zmm & not branch
+                    vpaddb {limb}{{{overflowed}}}, {limb}, {one_b}                                  # add one if overflowed is set
+
+                                                                                                    # using smaller mask sizes still clears the rest of the register
+                    kxorb {overflowed}, {overflowed}, {overflowed}                                  # clear overflowed
+                    kxorb {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_preserved}    # clear carry_mask_preserved
+                    vpaddq {limb}, {limb}, {rev}                                                    # add the vectors together; use quadword variant because
+                                                                                                    # the addition can't cross byte boundaries
+
+                    2:                                                                              # carry processing loop
+                    vpcmpub {carry_mask_kreg}, {limb}, {ten_b}, 5                                   # find the digits that are >= 10 and store them in carry_mask_kreg
+                    korq {carry_mask_preserved}, {carry_mask_preserved}, {carry_mask_kreg}          # and carry_mask_kreg into carry_mask_preserved
+
+                    ktestq {carry_mask_kreg}, {carry_mask_kreg}                                     # see if there are any carries
+                    jz 3f                                                                           # if there are no carries, we are done
+                    mov {ever_carried}, 1                                                           # there were carries because we didn't jump
+
+                    vpsubb {limb}{{{carry_mask_kreg}}}, {limb}, {ten_b}                             # subtract 10 from those that triggered carries
+                    kshiftlq {carry_mask_kreg}, {carry_mask_kreg}, 1                                # shift the mask left to use for carry propogation
+                    vpaddb {limb}{{{carry_mask_kreg}}}, {limb}, {one_b}                             # propogate the carries
+                    jmp 2b                                                                          # loop again because if there are no new carries it'll be caught earlier
+
+                    3:                                                                              # done
+                    "#,
+                    limb = inout(zmm_reg) limb.0, // the limb that is getting modified
+                    rev = out(zmm_reg) _, // scratch register for deinterleaving the reversed limb
+                    limb_ptr = in(reg) limb_ptr, // pointer to the current limb
+                    skip_len = in(reg) skip_len, // number of bytes to skip
+                    overflowed = in(kreg) overflowed, // indicate if we need to add 1 to the next limb
+                    one_b = in(zmm_reg) ONE_VECTOR_B, // a vector of 1s as 8-bit bytes
+                    ten_b = in(zmm_reg) TEN_VECTOR_B, // a vector of 10s as 8-bit bytes
+                    carry_mask_kreg = lateout(kreg) _, // tmp kreg for carry processing
+                    carry_mask_preserved = lateout(kreg) carry_mask, // non_shifted kreg to determine if overflow needs to be set
+                    ever_carried = inout(reg_byte) ever_carried_byte, // if the addition ever carried, this `Integer` cannot be a palindrome
+                    options(nostack)
+                );
+
+                overflowed = (carry_mask & 0x8000_0000_0000_0000_u64 != 0).into();
+            }
+        }
+
+        if overflowed == 0 {
+            self.0.pop();
+        } else {
+            *unsafe { self.0.last_mut().unwrap_unchecked() } = Limb({
+                let mut arr = [0u8; 64];
+                arr[0] = 1;
+                u8x64::from_array(arr)
+            });
+        }
+        ever_carried_byte != 0
     }
 
     #[inline]

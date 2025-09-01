@@ -495,6 +495,14 @@ fn test_reverse_interleave_limbs() {
 
     assert_eq!(a, [0x21u8; 64].into());
     assert_eq!(b, [0x12u8; 64].into());
+
+    let mut a: u8x64 = [9u8; 64].into();
+    let mut b: u8x64 = [0u8; 64].into();
+
+    Integer::reverse_interleave_x2(&mut a, &mut b);
+
+    assert_eq!(a, [0x09u8; 64].into());
+    assert_eq!(b, [0x90u8; 64].into());
 }
 
 #[test]
@@ -627,3 +635,18 @@ fn test_asm_bug_interleave() {
 //         test_with_rng(&mut rng, true);
 //     }
 // }
+
+#[test]
+fn test_limb_ror4_galois() {
+    use std::mem::transmute;
+    
+
+    const TEST: u8x64 = unsafe { transmute::<std::simd::Simd<u64, 8>, std::simd::Simd<u8, 64>>(u64x8::from_array([0x0103070f1f3f7fff, 0xfffefcf8f0e0c080, 0x0103070f1f3f7fff, 0xfffefcf8f0e0c080, 0x0103070f1f3f7fff, 0xfffefcf8f0e0c080, 0x0103070f1f3f7fff, 0xfffefcf8f0e0c080])) };
+    //const TEST_512: u8x64 = // TEST 4 times in a row
+    
+    const EXPECTED_OUTPUT: u8x64 = unsafe { transmute(u64x8::from_array([0x103070f0f1f3f7ff, 0xffefcf8f0f0e0c08, 0x103070f0f1f3f7ff, 0xffefcf8f0f0e0c08, 0x103070f0f1f3f7ff, 0xffefcf8f0f0e0c08, 0x103070f0f1f3f7ff, 0xffefcf8f0f0e0c08])) };
+    //const EXPECTED_OUTPUT_512: u8x64 = // EXPECTED_OUTPUT 4 times in a row
+
+    let output = Limb::ror4_galois(TEST);
+    assert_eq!(output, EXPECTED_OUTPUT);
+}

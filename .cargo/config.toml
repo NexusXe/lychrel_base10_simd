@@ -2,8 +2,8 @@
 rustflags = ["-C", "target-cpu=native", "-Z", "threads=32"]
 
 [unstable]
-build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
-build-std-features = ["panic_immediate_abort"]
+# build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
+# build-std-features = ["panic_immediate_abort"]
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-cpu=native", "-Z", "threads=32", "-Z", "fmt-debug=none"]

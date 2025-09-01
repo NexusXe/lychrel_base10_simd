@@ -45,7 +45,7 @@ fn iterate(
     starting_integer: Integer,
     tx: Option<Sender<StatusReport>>,
 ) -> IterationResult {
-    let _ = affinity::set_thread_affinity([7]); // fastest X3D cores, lower threads
+
     let mut current_iteration: Integer = starting_integer;
 
     let mut carried: bool = false;
@@ -112,7 +112,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
 
     #[cfg(not(debug_assertions))]
-    let _ = affinity::set_process_affinity([8]);
+    let _ = affinity::set_thread_affinity([5]);
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
