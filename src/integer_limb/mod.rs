@@ -438,46 +438,15 @@ impl Integer {
     }
 
     pub(crate) fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
-        fn reverse_shift(input: &u8x64) -> u8x64 {
-            input.reverse() << 4
-        }
-
         // logically these are just bitwise ANDs; however, because the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
         // latency and (somehow) doesn't use an FPU pipe
         // (this is based on data from Zen 4, but it is likely still true)
         let lhs_output = *lhs ^ rhs.reverse() << 4;
         let rhs_output = *rhs ^ lhs.reverse() << 4;
-        // use galois field affine transformation to rotate the bits of lhs_output 4 to the right
-        //let rhs_output_galois =  Limb::ror4_galois(lhs_output).reverse(); 
     
         *lhs = lhs_output;
         *rhs = rhs_output;
-    }
-
-    pub(crate) fn reverse_interleave(&mut self) {
-        if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse_interleave an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
-        }
-
-        let total_limbs = self.0.len();
-        let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
-        let rev_ptr = &mut self.0.last_mut().unwrap().0 as *mut u8x64;
-
-        for i in 0..total_limbs.div_ceil(2) {
-            unsafe {
-                let left_limb_ptr = limbs_ptr.add(i);
-                let right_limb_ptr = rev_ptr.sub(i);
-
-                Self::reverse_interleave_x2(&mut *left_limb_ptr, &mut *right_limb_ptr);
-            }
-        }
     }
 
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
@@ -505,18 +474,22 @@ impl Integer {
                 let left_limb_ptr = limbs_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
-                Self::reverse_interleave_x2(&mut *left_limb_ptr, &mut *right_limb_ptr);
+                let lhs = &mut *left_limb_ptr;
+                let rhs = &mut *right_limb_ptr;
+
+                let lhs_output = *lhs ^ rhs.reverse() << 4;
+                let rhs_output = *rhs ^ lhs.reverse() << 4;
+
+                *lhs = lhs_output;
+                *rhs = rhs_output;
             }
         }
 
-        let limb_count: usize = self.0.len();
-        
-
         self.0.push(Limb::new()); // padding
+
 
         let mut overflowed = false;
         let mut ever_carried = false;
-        
 
         const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
         const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
@@ -525,7 +498,7 @@ impl Integer {
             .0
             .iter_mut()
             .enumerate()
-            .take_while(|(idx, _)| idx < &limb_count)
+            .take_while(|(idx, _)| idx < &total_limbs)
         {
             // skip the last limb since it's padding
 
@@ -548,9 +521,11 @@ impl Integer {
                 //     // broadcast the result, without processing the carries, to the second half
 
                 //     // get the pointer of the mirror limb
-                //     let mirror_limb_ptr: *mut u8x64 = limb_ptr.add(limb_count - (2 * idx) - 1) as *mut u8x64;
+                //     let mirror_limb_offset = limb_count - (2 * idx) - 1;
+                //     dbg!(mirror_limb_offset);
+                //     let mirror_limb_ptr: *mut u8x64 = limb_ptr.add(mirror_limb_offset) as *mut u8x64;
                 //     // copy the result to the mirror limb
-                //     *mirror_limb_ptr = (*limb).into();
+                //     *mirror_limb_ptr = (*limb).reverse().into();
                 // }
 
                 loop {
@@ -564,8 +539,20 @@ impl Integer {
 
                     ever_carried = true;
 
-                    *limb = _mm512_mask_sub_epi8(limb.0.into(), carry_mask, limb.0.into(), TEN_VECTOR_B.into() ).into();
-                    *limb = _mm512_mask_add_epi8(limb.0.into(), carry_mask << 1, limb.0.into(), ONE_VECTOR_B.into()).into();
+                    *limb = _mm512_mask_sub_epi8(
+                        limb.0.into(),
+                        carry_mask,
+                        limb.0.into(),
+                        TEN_VECTOR_B.into(),
+                    )
+                    .into();
+                    *limb = _mm512_mask_add_epi8(
+                        limb.0.into(),
+                        carry_mask << 1,
+                        limb.0.into(),
+                        ONE_VECTOR_B.into(),
+                    )
+                    .into();
                 }
             }
         }
@@ -613,7 +600,6 @@ impl Integer {
 
         let limb_count: usize = self.0.len();
         
-
         self.0.push(Limb::new()); // padding
 
         let mut ever_carried_byte: u8 = 0;
