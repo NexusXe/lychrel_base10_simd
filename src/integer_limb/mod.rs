@@ -437,7 +437,7 @@ impl Integer {
         ever_carried_byte != 0
     }
 
-    pub(crate) fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
+    fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
         // logically these are just bitwise ANDs; however, because the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
         // latency and (somehow) doesn't use an FPU pipe
@@ -464,15 +464,21 @@ impl Integer {
 
         let total_limbs = self.0.len();
 
-        let skip_len = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+        self.0.push(Limb::new()); // padding
+
+        let skip_len = 64 - self.0[total_limbs - 1].len();
 
         let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
-        let rev_ptr = &mut self.0.last_mut().unwrap().0 as *mut u8x64;
+        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
+        
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
                 let left_limb_ptr = limbs_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
+
+                let data_lhs_needs: u8x64 = _mm512_loadu_epi8(rev_ptr.byte_add(skip_len) as *const i8).into();
+                let data_rhs_needs: u8x64 = _mm512_loadu_epi8(limbs_ptr.byte_sub(skip_len) as *const i8).into();
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
@@ -484,9 +490,6 @@ impl Integer {
                 *rhs = rhs_output;
             }
         }
-
-        self.0.push(Limb::new()); // padding
-        
 
         let mut overflowed = false;
         let mut ever_carried = false;
@@ -509,6 +512,7 @@ impl Integer {
                 let limb_ptr = &limb.0 as *const u8x64;
 
                 let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
+                //let reversed_limb: u8x64 = *limb_ptr >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
