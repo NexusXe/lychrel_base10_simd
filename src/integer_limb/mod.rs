@@ -423,28 +423,40 @@ impl Integer {
                 //let rhs_output =  Limb::ror4_galois(lhs_output).reverse();
 
                 *lhs = lhs_output;
-                *rhs = rhs_output;
+                *rhs = u8x64::splat(0);
             }
         }
         let mut overflowed = false;
         let mut ever_carried = false;
 
-        for (_, limb) in self
+        for (idx, limb) in self
             .0
             .iter_mut()
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
+            let first_half: bool = idx < (total_limbs).div_floor(2);
+
             unsafe {
                 let limb_ptr = &limb.0 as *const u8x64;
 
-                let reversed_limb: u8x64 = *limb_ptr >> 4;
+                if first_half || total_limbs == 1 {
+                    let reversed_limb: u8x64 = limb.0 >> 4;
+                    limb.0 = (limb.0 << 4) >> 4;
+                    debug_assert_eq!(u8x64::from(_mm512_add_epi64(limb.0.into(), reversed_limb.into())), u8x64::from(_mm512_add_epi8(limb.0.into(), reversed_limb.into())), "adding is producing digits that overflow 1-byte boundaries!");
+                    limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+                }
 
-                limb.0 = (limb.0 << 4) >> 4;
+                if first_half {
+                    // the result will be the same for the "mirror" limb, just offset
 
-                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+                    let mirror_limb_idx: usize = (total_limbs) - idx;
 
-                *limb = _mm512_mask_add_epi8(
+                    let mirror_limb_ptr = limbs_ptr.add(mirror_limb_idx).byte_sub(skip_len) as *mut i8;
+                    _mm512_storeu_epi8(mirror_limb_ptr, limb.0.into())
+                }
+
+                limb.0 = _mm512_mask_add_epi8(
                     limb.0.into(),
                     overflowed as u64,
                     limb.0.into(),
@@ -465,14 +477,14 @@ impl Integer {
 
                     ever_carried = true;
 
-                    *limb = _mm512_mask_sub_epi8(
+                    limb.0 = _mm512_mask_sub_epi8(
                         limb.0.into(),
                         carry_mask,
                         limb.0.into(),
                         _mm512_set1_epi8(10),
                     )
                     .into();
-                    *limb = _mm512_mask_add_epi8(
+                    limb.0 = _mm512_mask_add_epi8(
                         limb.0.into(),
                         carry_mask << 1,
                         limb.0.into(),

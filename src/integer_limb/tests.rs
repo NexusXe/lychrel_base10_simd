@@ -440,6 +440,18 @@ fn test_fused_reverse_add_asm_interleave() {
         integer!("19999999999999999999999999999999999999999999999999999999999999998")
     );
     assert!(ever_carried);
+
+    let mut integer5: Integer = integer!(
+        "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+    );
+    let ever_carried = integer5.fused_reverse_add_asm_interleave();
+    assert_eq!(
+        integer5,
+        integer!(
+            "2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+        )
+    );
+    assert!(ever_carried);
 }
 
 #[test]
