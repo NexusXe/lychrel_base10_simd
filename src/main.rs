@@ -226,6 +226,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         LIMIT
     };
+    println!("----------------------------------------------------------------");
 
     let (tx, rx) = mpsc::channel::<StatusReport>();
 

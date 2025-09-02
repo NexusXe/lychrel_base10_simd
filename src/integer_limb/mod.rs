@@ -339,7 +339,7 @@ impl Integer {
     }
 
     fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
-        // logically these are just bitwise ANDs; however, because the dst register
+        // logically these are just bitwise ANDs; however, since the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
         // latency and (somehow) doesn't use an FPU pipe
         // (this is based on data from Zen 4, but it is likely still true)
@@ -381,8 +381,9 @@ impl Integer {
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
 
-                let lhs_output = *lhs ^ rhs.reverse() << 4;
-                let rhs_output = *rhs ^ lhs.reverse() << 4;
+                let lhs_output = *lhs ^ (rhs.reverse() << 4);
+                let rhs_output = *rhs ^ (lhs.reverse() << 4);
+                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse(); 
 
                 *lhs = lhs_output;
                 *rhs = rhs_output;
@@ -391,9 +392,6 @@ impl Integer {
 
         let mut overflowed = false;
         let mut ever_carried = false;
-
-        const ONE_VECTOR_B: u8x64 = u8x64::splat(1);
-        const TEN_VECTOR_B: u8x64 = u8x64::splat(10);
 
         for (_, limb) in self
             .0
@@ -407,19 +405,15 @@ impl Integer {
                 let limb_ptr = &limb.0 as *const u8x64;
 
                 let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
-                //let reversed_limb: u8x64 = *limb_ptr >> 4;
-                eprintln!("rev ended up being:\n{0}", Limb(reversed_limb));
-
                 limb.0 = (limb.0 << 4) >> 4;
-                eprintln!("lmb ended up being:\n{0}", Limb(limb.0));
 
                 *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
-                *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), ONE_VECTOR_B.into()).into();
+                *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), _mm512_set1_epi64(1)).into();
                 overflowed = false;
 
                 loop {
-                    let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), TEN_VECTOR_B.into());
+                    let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
                     } else if carry_mask == 0 {
@@ -433,14 +427,14 @@ impl Integer {
                         limb.0.into(),
                         carry_mask,
                         limb.0.into(),
-                        TEN_VECTOR_B.into(),
+                        _mm512_set1_epi8(10),
                     )
                     .into();
                     *limb = _mm512_mask_add_epi8(
                         limb.0.into(),
                         carry_mask << 1,
                         limb.0.into(),
-                        ONE_VECTOR_B.into(),
+                        _mm512_set1_epi8(1),
                     )
                     .into();
                 }
