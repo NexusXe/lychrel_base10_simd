@@ -371,25 +371,61 @@ impl Integer {
 
         let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
         let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
-        
 
-        for i in 0..total_limbs.div_ceil(2) {
-            unsafe {
+        unsafe {
+            // do the first reversal manually so the rhs can be specially constructed
+            // this elimates the need for padding to be on both sides of the Integer
+            let mut indices_arr: [u8; 64] = [0; 64];
+            for (i, byte) in indices_arr.iter_mut().enumerate() {
+                if i < skip_len {
+                    *byte = 0xFF;
+                } else {
+                    *byte = (i - skip_len) as u8;
+                }
+            }
+
+            let index_mask = _mm512_loadu_si512(indices_arr.as_ptr() as *const __m512i);
+            let write_mask = u64::MAX << skip_len;
+
+            let data_rhs_wants: u8x64 =
+                _mm512_maskz_permutexvar_epi8(write_mask, index_mask, (*limbs_ptr).into()).into();
+
+            let data_lhs_wants: u8x64 =
+                u8x64::from(_mm512_loadu_epi64(rev_ptr.byte_sub(skip_len) as *const i64));
+
+            //eprintln!("lhs_data:   {data_lhs_wants:0x?}\nrhs_data:   {data_rhs_wants:0x?}");
+
+            let lhs = &mut *limbs_ptr;
+            let rhs = &mut *rev_ptr;
+
+            let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
+            let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
+
+            //eprintln!("lhs_output: {lhs_output:0x?}\nrhs_output: {rhs_output:0x?}");
+
+            *lhs = lhs_output;
+            *rhs = rhs_output;
+
+            for i in 1..total_limbs.div_ceil(2) {
                 let left_limb_ptr = limbs_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
+
+                let data_rhs_wants: __m512i =
+                    _mm512_loadu_epi64(left_limb_ptr.byte_sub(skip_len) as *const i64);
+                let data_lhs_wants: __m512i =
+                    _mm512_loadu_epi64(right_limb_ptr.byte_sub(skip_len) as *const i64);
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
 
-                let lhs_output = *lhs ^ (rhs.reverse() << 4);
-                let rhs_output = *rhs ^ (lhs.reverse() << 4);
-                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse(); 
+                let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
+                let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
+                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse();
 
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
         }
-
         let mut overflowed = false;
         let mut ever_carried = false;
 
@@ -399,21 +435,27 @@ impl Integer {
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
-
             unsafe {
-                
                 let limb_ptr = &limb.0 as *const u8x64;
 
-                let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
+                let reversed_limb: u8x64 = *limb_ptr >> 4;
+
                 limb.0 = (limb.0 << 4) >> 4;
 
                 *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
-                *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), _mm512_set1_epi64(1)).into();
+                *limb = _mm512_mask_add_epi8(
+                    limb.0.into(),
+                    overflowed as u64,
+                    limb.0.into(),
+                    _mm512_set1_epi64(1),
+                )
+                .into();
                 overflowed = false;
 
                 loop {
-                    let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                    let carry_mask: __mmask64 =
+                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
                     } else if carry_mask == 0 {
