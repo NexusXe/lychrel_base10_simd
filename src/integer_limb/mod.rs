@@ -204,6 +204,60 @@ impl Limb {
             _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
         }
     }
+
+    /// E.V.I.L. Shift:
+    ///    
+    /// **E**fficiently<br>
+    /// **V**ectorized<br>
+    /// **I**nline<br>
+    /// **L**ane-Permutation<br>
+    ///
+    /// This is just a helper for shifting a result over to be re-used on the right side of the Integer. There isn't any reason this is called "evil", I just thought it was funny.
+    pub(crate) fn evil_shift(&self, skip_len: usize) -> [u8x64; 2] {
+        if skip_len > 64 {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to evil transform with a shift > 64");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        const DECREMENTING_PERMUTE: [u8; 64] = {
+            let mut out = [0u8; 64];
+            let mut i: usize = 0;
+            while i < 64 {
+                out[i] = i as u8;
+                i += 1;
+            }
+            out
+        };
+
+        const PERMUTE_ARR: [u8; 192] =
+            unsafe { std::mem::transmute([[128u8; 64], DECREMENTING_PERMUTE, [128u8; 64]]) };
+
+        let lhs_slice = &PERMUTE_ARR[skip_len..skip_len + 64];
+        let rhs_slice = &PERMUTE_ARR[skip_len + 64..skip_len + 128];
+
+        if lhs_slice.len() != 64 || rhs_slice.len() != 64 {
+            #[cfg(debug_assertions)]
+            unreachable!("Bogus shift index slices were generated. Something has gone very wrong!");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let permute_idxs: [u8x64; 2] = [u8x64::from_slice(lhs_slice), u8x64::from_slice(rhs_slice)];
+
+        unsafe {
+            let lhs: u8x64 = _mm512_permutexvar_epi8(permute_idxs[0].into(), self.0.into()).into();
+            let rhs: u8x64 = _mm512_permutexvar_epi8(permute_idxs[1].into(), self.0.into()).into();
+            [lhs, rhs]
+        }
+    }
 }
 
 impl Default for Limb {
@@ -443,7 +497,11 @@ impl Integer {
                 if first_half || total_limbs == 1 {
                     let reversed_limb: u8x64 = limb.0 >> 4;
                     limb.0 = (limb.0 << 4) >> 4;
-                    debug_assert_eq!(u8x64::from(_mm512_add_epi64(limb.0.into(), reversed_limb.into())), u8x64::from(_mm512_add_epi8(limb.0.into(), reversed_limb.into())), "adding is producing digits that overflow 1-byte boundaries!");
+                    debug_assert_eq!(
+                        u8x64::from(_mm512_add_epi64(limb.0.into(), reversed_limb.into())),
+                        u8x64::from(_mm512_add_epi8(limb.0.into(), reversed_limb.into())),
+                        "adding is producing digits that overflow 1-byte boundaries!"
+                    );
                     limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
                 }
 
@@ -452,7 +510,8 @@ impl Integer {
 
                     let mirror_limb_idx: usize = (total_limbs) - idx;
 
-                    let mirror_limb_ptr = limbs_ptr.add(mirror_limb_idx).byte_sub(skip_len) as *mut i8;
+                    let mirror_limb_ptr =
+                        limbs_ptr.add(mirror_limb_idx).byte_sub(skip_len) as *mut i8;
                     _mm512_storeu_epi8(mirror_limb_ptr, limb.0.into())
                 }
 
