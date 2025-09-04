@@ -15,13 +15,16 @@
 mod integer_limb;
 use integer_limb::{Checkpoint, Integer, Limb};
 use std::hint::{cold_path, likely, unlikely};
-use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::simd::prelude::*;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
+use std::path::{Path, PathBuf};
+
+#[cfg(not(feature = "no-verify"))]
+use std::io::Read;
+
 
 pub struct IterationResult {
     last_iteration: usize,
@@ -35,6 +38,7 @@ pub struct StatusReport {
 }
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
+
 const INITIAL_SEED: &str = "196";
 const LOG_FREQUENCY_EXP: usize = 14;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
@@ -264,63 +268,66 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let num_limbs = current_value.0.len();
 
-            let checkpoint_path =
-                Path::new(CHECKPOINT_DIR).join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
+            #[cfg(not(feature = "no-verify"))]
+            {
+                let checkpoint_path =
+                    Path::new(CHECKPOINT_DIR).join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
 
-            println!(
-                "Reached checkpoint: {}",
-                unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
-            );
-            let checkpoint = current_value.into_checkpoint(i);
-            cold_path();
-            if checkpoint_path.exists() && checkpoint_path.is_file() {
-                print!("Checkpoint already exists; validating... ");
-                // read the file
-                let mut file = match std::fs::File::open(checkpoint_path) {
-                    Ok(file) => file,
-                    Err(_) => {
-                        cold_path();
-                        eprintln!("UNABLE TO OPEN FILE\nContinuing anyway...");
+                println!(
+                    "Reached checkpoint: {}",
+                    unsafe { checkpoint_path.file_name().unwrap_unchecked() }.display()
+                );
+                let checkpoint = current_value.into_checkpoint(i);
+                cold_path();
 
-                        continue;
-                    }
-                };
-                let mut buffer = Vec::new();
-                match file.read_to_end(&mut buffer) {
-                    Ok(_) => {
-                        let read_checkpoint = Checkpoint::new(i, buffer);
-                        if likely(read_checkpoint == checkpoint) {
-                            println!("OK");
-                        } else {
+                if checkpoint_path.exists() && checkpoint_path.is_file() {
+                    print!("Checkpoint already exists; validating... ");
+                    // read the file
+                    let mut file = match std::fs::File::open(checkpoint_path) {
+                        Ok(file) => file,
+                        Err(_) => {
                             cold_path();
-                            println!("FAILED");
+                            eprintln!("UNABLE TO OPEN FILE\nContinuing anyway...");
 
-                            eprintln!("Checkpoint validation failed at checkpoint {i:}");
-                            std::process::exit(1)
+                            continue;
+                        }
+                    };
+                    let mut buffer = Vec::new();
+                    match file.read_to_end(&mut buffer) {
+                        Ok(_) => {
+                            let read_checkpoint = Checkpoint::new(i, buffer);
+                            if likely(read_checkpoint == checkpoint) {
+                                println!("OK");
+                            } else {
+                                cold_path();
+                                println!("FAILED");
+
+                                eprintln!("Checkpoint validation failed at checkpoint {i:}");
+                                std::process::exit(1)
+                            }
+                        }
+                        Err(_) => {
+                            cold_path();
+                            eprintln!("UNABLE TO READ FILE");
+                            eprintln!("Continuing anyway...")
                         }
                     }
-                    Err(_) => {
-                        cold_path();
-                        eprintln!("UNABLE TO READ FILE");
-                        eprintln!("Continuing anyway...")
-                    }
-                }
-            } else {
-                print!("Writing checkpoint to {}... ", checkpoint_path.display());
-                let data = checkpoint.data().1;
-                let data_length = data.len();
-                match std::fs::write(checkpoint_path, data) {
-                    Ok(_) => {
-                        println!("OK");
-                        println!("Wrote {:} KiB", data_length / 1024);
-                    }
-                    Err(e) => {
-                        eprintln!("FAILED: {e}");
-                        std::process::exit(1);
+                } else {
+                    print!("Writing checkpoint to {}... ", checkpoint_path.display());
+                    let data = checkpoint.data().1;
+                    let data_length = data.len();
+                    match std::fs::write(checkpoint_path, data) {
+                        Ok(_) => {
+                            println!("OK");
+                            println!("Wrote {:} KiB", data_length / 1024);
+                        }
+                        Err(e) => {
+                            eprintln!("FAILED: {e}");
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
-
             println!(
                 "{:} limbs, approx. {:} digits, {:} KiB of memory",
                 num_limbs,
