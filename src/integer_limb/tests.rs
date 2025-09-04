@@ -391,11 +391,19 @@ fn test_reverse_interleave_limbs() {
 //     integer.fused_reverse_add_packed_asm();
 // }
 
+// #[test]
+// fn test_fused_reverse_add_asm_simple_interleave() {
+//     let mut integer = integer!("196");
+//     let ever_carried = integer.fused_reverse_add_asm_interleave();
+//     assert_eq!(integer, integer!("887"));
+//     assert!(ever_carried);
+// }
+
 #[test]
 fn test_fused_reverse_add_asm_simple_interleave() {
-    let mut integer = integer!("196");
+    let mut integer = integer!("1960000000000000000000000000000000000000000000000000000000000000196");
     let ever_carried = integer.fused_reverse_add_asm_interleave();
-    assert_eq!(integer, integer!("887"));
+    assert_eq!(integer, integer!("8870000000000000000000000000000000000000000000000000000000000000887"));
     assert!(ever_carried);
 }
 
@@ -549,4 +557,19 @@ fn test_limb_ror4_galois() {
 
     let output = Limb::ror4_galois(TEST);
     assert_eq!(output, EXPECTED_OUTPUT);
+}
+
+#[test]
+fn test_evil_shift() {
+    let integer = integer!("196");
+    let skip_len = integer.skip_len();
+    let evil_results = integer.0[0].evil_shift(skip_len); // awesome variable name
+    assert_eq!(evil_results[0], integer!("196000").0[0].0);
+    assert_eq!(evil_results[1], u8x64::splat(0));
+
+    let integer = Integer(vec![Limb(u8x64::splat(1))]);
+    let skip_len = integer.skip_len();
+    let evil_results = integer.0[0].evil_shift(skip_len);
+    assert_eq!(evil_results[0], u8x64::splat(0));
+    assert_eq!(evil_results[1], u8x64::splat(1));
 }

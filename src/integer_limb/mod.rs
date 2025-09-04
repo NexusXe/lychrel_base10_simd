@@ -235,7 +235,7 @@ impl Limb {
         };
 
         const PERMUTE_ARR: [u8; 192] =
-            unsafe { std::mem::transmute([[128u8; 64], DECREMENTING_PERMUTE, [128u8; 64]]) };
+            unsafe { std::mem::transmute([[0xFFu8; 64], DECREMENTING_PERMUTE, [0xFFu8; 64]]) };
 
         let lhs_slice = &PERMUTE_ARR[skip_len..skip_len + 64];
         let rhs_slice = &PERMUTE_ARR[skip_len + 64..skip_len + 128];
@@ -253,8 +253,10 @@ impl Limb {
         let permute_idxs: [u8x64; 2] = [u8x64::from_slice(lhs_slice), u8x64::from_slice(rhs_slice)];
 
         unsafe {
-            let lhs: u8x64 = _mm512_permutexvar_epi8(permute_idxs[0].into(), self.0.into()).into();
-            let rhs: u8x64 = _mm512_permutexvar_epi8(permute_idxs[1].into(), self.0.into()).into();
+            let lhs_zeromask: __mmask64 = _mm512_cmpneq_epu8_mask(permute_idxs[0].into(), u8x64::splat(0xFFu8).into());
+            let rhs_zeromask: __mmask64 = _mm512_cmpneq_epu8_mask(permute_idxs[1].into(), u8x64::splat(0xFFu8).into());
+            let lhs: u8x64 = _mm512_maskz_permutexvar_epi8(lhs_zeromask, permute_idxs[0].into(), self.0.into()).into();
+            let rhs: u8x64 = _mm512_maskz_permutexvar_epi8(rhs_zeromask, permute_idxs[1].into(), self.0.into()).into();
             [lhs, rhs]
         }
     }
@@ -340,6 +342,23 @@ impl Integer {
     // }
 
     #[inline]
+    fn skip_len(&self) -> usize {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!("Tried to get the skip_len for an empty integer");
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked();
+            }
+        }
+
+        let output = 64 - unsafe {self.0.last().unwrap_unchecked()}.len();
+        debug_assert_ne!(output, 64);
+        output
+    }
+
+    #[inline]
     pub(crate) fn reverse_into_integer(&self, output: &mut Self) {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -362,6 +381,7 @@ impl Integer {
 
         // safe because of the check at the top
         let skip_len: usize = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+        debug_assert_eq!(skip_len, self.skip_len());
 
         output_vec.push(Limb::new());
 
@@ -429,56 +449,65 @@ impl Integer {
         unsafe {
             // do the first reversal manually so the rhs can be specially constructed
             // this elimates the need for padding to be on both sides of the Integer
-            let mut indices_arr: [u8; 64] = [0; 64];
-            for (i, byte) in indices_arr.iter_mut().enumerate() {
-                if i < skip_len {
-                    *byte = 0xFF;
-                } else {
-                    *byte = (i - skip_len) as u8;
-                }
-            }
 
-            let index_mask = _mm512_loadu_si512(indices_arr.as_ptr() as *const __m512i);
-            let write_mask = u64::MAX << skip_len;
+            // let mut indices_arr: [u8; 64] = [0; 64];
+            // for (i, byte) in indices_arr.iter_mut().enumerate() {
+            //     if i < skip_len {
+            //         *byte = 0xFF;
+            //     } else {
+            //         *byte = (i - skip_len) as u8;
+            //     }
+            // }
 
-            let data_rhs_wants: u8x64 =
-                _mm512_maskz_permutexvar_epi8(write_mask, index_mask, (*limbs_ptr).into()).into();
+            // let index_mask = _mm512_loadu_si512(indices_arr.as_ptr() as *const __m512i);
+            // let write_mask = u64::MAX << skip_len;
 
-            let data_lhs_wants: u8x64 =
-                u8x64::from(_mm512_loadu_epi64(rev_ptr.byte_sub(skip_len) as *const i64));
+            // let data_rhs_wants: u8x64 =
+            //     _mm512_maskz_permutexvar_epi8(write_mask, index_mask, (*limbs_ptr).into()).into();
+
+            // let data_lhs_wants: u8x64 =
+            //     u8x64::from(_mm512_loadu_epi64(rev_ptr.byte_sub(skip_len) as *const i64));
 
             //eprintln!("lhs_data:   {data_lhs_wants:0x?}\nrhs_data:   {data_rhs_wants:0x?}");
 
-            let lhs = &mut *limbs_ptr;
-            let rhs = &mut *rev_ptr;
+            // let lhs = &mut *limbs_ptr;
+            // let rhs = &mut *rev_ptr;
 
-            let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
-            let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
+            //let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
+            //let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
 
             //eprintln!("lhs_output: {lhs_output:0x?}\nrhs_output: {rhs_output:0x?}");
 
-            *lhs = lhs_output;
-            *rhs = rhs_output;
+            // *lhs = lhs_output;
+            // *rhs = u8x64::splat(0);
 
-            for i in 1..total_limbs.div_ceil(2) {
+            for i in 0..(total_limbs - 1).div_ceil(2) {
                 let left_limb_ptr = limbs_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
-                let data_rhs_wants: __m512i =
-                    _mm512_loadu_epi64(left_limb_ptr.byte_sub(skip_len) as *const i64);
                 let data_lhs_wants: __m512i =
                     _mm512_loadu_epi64(right_limb_ptr.byte_sub(skip_len) as *const i64);
+                
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
 
                 let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
-                let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
-                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse();
-
                 *lhs = lhs_output;
-                *rhs = u8x64::splat(0);
+
+                // zero out what we have already read, thereby "consuming" it
+                // TODO: try not to have to do this
+                //_mm512_storeu_epi64(right_limb_ptr.byte_sub(skip_len) as *mut i64, u8x64::splat(0).into());
             }
+
+            // the middle limb (rounding down) needs its upper skip_len bytes zeroed, as these are actually part
+            // of the second half of the Integer
+            // let middle_limb_idx = (total_limbs - 1).div_floor(2);
+
+            // let zero_mask: __mmask64 = __mmask64::MAX >> skip_len;
+
+            // *limbs_ptr.add(middle_limb_idx) =
+            //     _mm512_maskz_mov_epi8(zero_mask, (*(limbs_ptr.add(middle_limb_idx))).into()).into();
         }
         let mut overflowed = false;
         let mut ever_carried = false;
@@ -496,23 +525,23 @@ impl Integer {
 
                 if first_half || total_limbs == 1 {
                     let reversed_limb: u8x64 = limb.0 >> 4;
+                    eprintln!("limb b: {:?}", limb.0);
                     limb.0 = (limb.0 << 4) >> 4;
                     debug_assert_eq!(
                         u8x64::from(_mm512_add_epi64(limb.0.into(), reversed_limb.into())),
                         u8x64::from(_mm512_add_epi8(limb.0.into(), reversed_limb.into())),
                         "adding is producing digits that overflow 1-byte boundaries!"
                     );
+                    
+                    eprintln!("rev   : {:?}", reversed_limb);
                     limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
-                }
+                    eprintln!("limb a: {:?}", limb.0);
+                    let reverse_tx = limb.evil_shift(skip_len);
 
-                if first_half {
-                    // the result will be the same for the "mirror" limb, just offset
-
-                    let mirror_limb_idx: usize = (total_limbs) - idx;
-
-                    let mirror_limb_ptr =
-                        limbs_ptr.add(mirror_limb_idx).byte_sub(skip_len) as *mut i8;
-                    _mm512_storeu_epi8(mirror_limb_ptr, limb.0.into())
+                    *limbs_ptr.add((total_limbs - idx) - 1) |= reverse_tx[0];
+                    eprintln!("tx 1: {:?}", reverse_tx[0]);
+                    eprintln!("tx 2: {:?}", reverse_tx[1]);
+                    *limbs_ptr.add(total_limbs - idx) |= reverse_tx[1];
                 }
 
                 limb.0 = _mm512_mask_add_epi8(
