@@ -253,10 +253,16 @@ impl Limb {
         let permute_idxs: [u8x64; 2] = [u8x64::from_slice(lhs_slice), u8x64::from_slice(rhs_slice)];
 
         unsafe {
-            let lhs_zeromask: __mmask64 = _mm512_cmpneq_epu8_mask(permute_idxs[0].into(), u8x64::splat(0xFFu8).into());
-            let rhs_zeromask: __mmask64 = _mm512_cmpneq_epu8_mask(permute_idxs[1].into(), u8x64::splat(0xFFu8).into());
-            let lhs: u8x64 = _mm512_maskz_permutexvar_epi8(lhs_zeromask, permute_idxs[0].into(), self.0.into()).into();
-            let rhs: u8x64 = _mm512_maskz_permutexvar_epi8(rhs_zeromask, permute_idxs[1].into(), self.0.into()).into();
+            let lhs_zeromask: __mmask64 =
+                _mm512_cmpneq_epu8_mask(permute_idxs[0].into(), u8x64::splat(0xFFu8).into());
+            let rhs_zeromask: __mmask64 =
+                _mm512_cmpneq_epu8_mask(permute_idxs[1].into(), u8x64::splat(0xFFu8).into());
+            let lhs: u8x64 =
+                _mm512_maskz_permutexvar_epi8(lhs_zeromask, permute_idxs[0].into(), self.0.into())
+                    .into();
+            let rhs: u8x64 =
+                _mm512_maskz_permutexvar_epi8(rhs_zeromask, permute_idxs[1].into(), self.0.into())
+                    .into();
             [lhs, rhs]
         }
     }
@@ -353,7 +359,7 @@ impl Integer {
             }
         }
 
-        let output = 64 - unsafe {self.0.last().unwrap_unchecked()}.len();
+        let output = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
         debug_assert_ne!(output, 64);
         output
     }
@@ -439,111 +445,74 @@ impl Integer {
 
         let total_limbs = self.0.len();
 
-        self.0.push(Limb::new()); // padding
+        self.0.push(Limb::new()); // padding for skip_len != 0 && total_limbs > 1
 
         let skip_len = 64 - self.0[total_limbs - 1].len();
 
-        let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
-        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
+        let limbs_base_ptr: *mut u8x64 = self.0.as_mut_ptr() as *mut u8x64;
+        let rev_base_ptr: *mut u8x64 = &mut self.0[total_limbs - 1].0;
 
         unsafe {
-            // do the first reversal manually so the rhs can be specially constructed
-            // this elimates the need for padding to be on both sides of the Integer
+            // do it the first time from the base pointer in case there's only one limb to avoid a branch
+            // use this weird zero-masking load and merge-masking store because, technically, i'm loading
+            // memory that is outside of the Vec<Limb>
+            let left_limb_ptr = limbs_base_ptr;
+            let right_limb_aligned_ptr = rev_base_ptr;
 
-            // let mut indices_arr: [u8; 64] = [0; 64];
-            // for (i, byte) in indices_arr.iter_mut().enumerate() {
-            //     if i < skip_len {
-            //         *byte = 0xFF;
-            //     } else {
-            //         *byte = (i - skip_len) as u8;
-            //     }
-            // }
+            let right_limb_shifted_ptr = right_limb_aligned_ptr.byte_sub(skip_len) as *mut i8;
+            //eprintln!("right_limb_shifted: {:?}", Limb::from(_mm512_loadu_epi8(right_limb_shifted_ptr)) );
+            //eprintln!("skip_len: {skip_len:}");
+            let data_lhs_wants: __m512i = u8x64::from(_mm512_maskz_loadu_epi8(
+                __mmask64::MAX << skip_len,
+                right_limb_shifted_ptr,
+            ))
+            .reverse()
+            .into();
+            //eprintln!("data_lhs_wants:\n{:?}", Limb::from(data_lhs_wants));
 
-            // let index_mask = _mm512_loadu_si512(indices_arr.as_ptr() as *const __m512i);
-            // let write_mask = u64::MAX << skip_len;
+            let base_result: u8x64 =
+                _mm512_add_epi64((*left_limb_ptr).into(), data_lhs_wants).into();
 
-            // let data_rhs_wants: u8x64 =
-            //     _mm512_maskz_permutexvar_epi8(write_mask, index_mask, (*limbs_ptr).into()).into();
+            //eprintln!("base_result:\n{:?}", Limb::from(base_result));
+            *left_limb_ptr = base_result;
 
-            // let data_lhs_wants: u8x64 =
-            //     u8x64::from(_mm512_loadu_epi64(rev_ptr.byte_sub(skip_len) as *const i64));
+            _mm512_mask_storeu_epi8(
+                right_limb_shifted_ptr,
+                __mmask64::MAX << skip_len,
+                base_result.reverse().into(),
+            );
 
-            //eprintln!("lhs_data:   {data_lhs_wants:0x?}\nrhs_data:   {data_rhs_wants:0x?}");
+            for i in 1..(total_limbs - 1).div_ceil(2) {
+                // half the limbs, including a middle one if it exists
+                // doesn't run when the integer only has a single limb
+                let left_limb_ptr = limbs_base_ptr.add(i);
+                let right_limb_aligned_ptr = rev_base_ptr.byte_sub(i);
+                let right_limb_shifted_ptr =
+                    right_limb_aligned_ptr.byte_sub(skip_len) as *mut __m512i;
 
-            // let lhs = &mut *limbs_ptr;
-            // let rhs = &mut *rev_ptr;
-
-            //let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
-            //let rhs_output = *rhs ^ (u8x64::from(data_rhs_wants).reverse() << 4);
-
-            //eprintln!("lhs_output: {lhs_output:0x?}\nrhs_output: {rhs_output:0x?}");
-
-            // *lhs = lhs_output;
-            // *rhs = u8x64::splat(0);
-
-            for i in 0..(total_limbs - 1).div_ceil(2) {
-                let left_limb_ptr = limbs_ptr.add(i);
-                let right_limb_ptr = rev_ptr.sub(i);
-
-                let data_lhs_wants: __m512i =
-                    _mm512_loadu_epi64(right_limb_ptr.byte_sub(skip_len) as *const i64);
-                
-
-                let lhs = &mut *left_limb_ptr;
-                let rhs = &mut *right_limb_ptr;
-
-                let lhs_output = *lhs ^ (u8x64::from(data_lhs_wants).reverse() << 4);
-                *lhs = lhs_output;
-
-                // zero out what we have already read, thereby "consuming" it
-                // TODO: try not to have to do this
-                //_mm512_storeu_epi64(right_limb_ptr.byte_sub(skip_len) as *mut i64, u8x64::splat(0).into());
+                let data_lhs_wants = _mm512_loadu_si512(right_limb_shifted_ptr);
+                // we have both values at this point, might as well just do the math now
+                let result = _mm512_add_epi64((*left_limb_ptr).into(), data_lhs_wants);
+                *left_limb_ptr = result.into();
+                _mm512_storeu_si512(
+                    right_limb_shifted_ptr,
+                    Limb(u8x64::from(result).reverse()).into(),
+                );
             }
-
-            // the middle limb (rounding down) needs its upper skip_len bytes zeroed, as these are actually part
-            // of the second half of the Integer
-            // let middle_limb_idx = (total_limbs - 1).div_floor(2);
-
-            // let zero_mask: __mmask64 = __mmask64::MAX >> skip_len;
-
-            // *limbs_ptr.add(middle_limb_idx) =
-            //     _mm512_maskz_mov_epi8(zero_mask, (*(limbs_ptr.add(middle_limb_idx))).into()).into();
         }
+
         let mut overflowed = false;
         let mut ever_carried = false;
 
-        for (idx, limb) in self
+        for (_idx, limb) in self
             .0
             .iter_mut()
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
-            let first_half: bool = idx < (total_limbs).div_floor(2);
-
+            //eprintln!("idx: {_idx:}");
             unsafe {
-                let limb_ptr = &limb.0 as *const u8x64;
-
-                if first_half || total_limbs == 1 {
-                    let reversed_limb: u8x64 = limb.0 >> 4;
-                    eprintln!("limb b: {:?}", limb.0);
-                    limb.0 = (limb.0 << 4) >> 4;
-                    debug_assert_eq!(
-                        u8x64::from(_mm512_add_epi64(limb.0.into(), reversed_limb.into())),
-                        u8x64::from(_mm512_add_epi8(limb.0.into(), reversed_limb.into())),
-                        "adding is producing digits that overflow 1-byte boundaries!"
-                    );
-                    
-                    eprintln!("rev   : {:?}", reversed_limb);
-                    limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
-                    eprintln!("limb a: {:?}", limb.0);
-                    let reverse_tx = limb.evil_shift(skip_len);
-
-                    *limbs_ptr.add((total_limbs - idx) - 1) |= reverse_tx[0];
-                    eprintln!("tx 1: {:?}", reverse_tx[0]);
-                    eprintln!("tx 2: {:?}", reverse_tx[1]);
-                    *limbs_ptr.add(total_limbs - idx) |= reverse_tx[1];
-                }
-
+                // add a carry if the previous addition overflowed
                 limb.0 = _mm512_mask_add_epi8(
                     limb.0.into(),
                     overflowed as u64,
@@ -554,17 +523,22 @@ impl Integer {
                 overflowed = false;
 
                 loop {
+                    // find all digits >= 10
                     let carry_mask: __mmask64 =
                         _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+
+                    //  if the most significant digit is >= 10, set overflowed for the next loop
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
                     } else if carry_mask == 0 {
+                        // no carries, so we're done
                         cold_path();
                         break;
                     }
 
-                    ever_carried = true;
+                    ever_carried = true; // since we didn't break
 
+                    // subtract 10 from all digits that triggered a carry
                     limb.0 = _mm512_mask_sub_epi8(
                         limb.0.into(),
                         carry_mask,
@@ -572,6 +546,8 @@ impl Integer {
                         _mm512_set1_epi8(10),
                     )
                     .into();
+
+                    // propogate carries to digits one to the left of those that triggered carries
                     limb.0 = _mm512_mask_add_epi8(
                         limb.0.into(),
                         carry_mask << 1,
@@ -584,12 +560,14 @@ impl Integer {
         }
 
         if overflowed {
+            // replace the padding limb with 1 if there was an overflow
             *unsafe { self.0.last_mut().unwrap_unchecked() } = Limb({
                 let mut arr = [0u8; 64];
                 arr[0] = 1;
                 u8x64::from_array(arr)
             });
         } else {
+            // otherwise just get rid of it because an empty trailing limb is UB
             self.0.pop();
         }
         ever_carried
@@ -1130,7 +1108,7 @@ macro_rules! integer {
 
         for digit in value_str.chars().rev() {
             if !digit.is_digit(10) {
-                panic!("Invalid digit: {}", digit);
+                panic!("Invalid digit: \"{}\"", digit);
             }
             current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
 
