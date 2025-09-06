@@ -6,15 +6,6 @@ use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::simd::prelude::*;
 
-// use windows::Win32::System::Memory::{
-//     GetLargePageMinimum, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc2,
-// };
-// use windows::Win32::System::Threading::GetCurrentProcess;
-
-
-// pub(crate) const HUGE_PAGE_SIZE_BYTES: usize = 2097152 * 512; // 1 GiB huge page
-// pub(crate) const FIXEDVEC_CAPACITY: usize = HUGE_PAGE_SIZE_BYTES / std::mem::size_of::<Limb>();
-
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.

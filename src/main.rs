@@ -22,11 +22,6 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
 
-// use windows::Win32::System::Memory::{
-//     GetLargePageMinimum, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc2,
-// };
-// use windows::Win32::System::Threading::GetCurrentProcess;
-
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
 
@@ -109,28 +104,6 @@ fn iterate(
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     const LIMIT_SHORT: usize = 603_567;
-
-    // #[cfg(debug_assertions)]
-    // {
-    //     let large_page_size = unsafe { GetLargePageMinimum() };
-    //     assert!(integer_limb::HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
-    // }
-
-    // let process_handle = unsafe { GetCurrentProcess() };
-
-    // let large_page_memory = unsafe {
-    //     VirtualAlloc2(
-    //         Some(process_handle),
-    //         None, // Let the OS determine the address
-    //         integer_limb::HUGE_PAGE_SIZE_BYTES,
-    //         MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, // Request large pages
-    //         PAGE_READWRITE.0,
-    //         None
-    //     )
-    // };
-
-    // let _ = std::hint::black_box(large_page_memory);
-
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
