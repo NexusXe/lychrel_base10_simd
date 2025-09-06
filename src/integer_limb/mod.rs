@@ -6,6 +6,15 @@ use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::simd::prelude::*;
 
+use windows::Win32::System::Memory::{
+    GetLargePageMinimum, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc2,
+};
+use windows::Win32::System::Threading::GetCurrentProcess;
+
+
+pub(crate) const HUGE_PAGE_SIZE_BYTES: usize = 2097152 * 512; // 1 GiB huge page
+pub(crate) const FIXEDVEC_CAPACITY: usize = HUGE_PAGE_SIZE_BYTES / std::mem::size_of::<Limb>();
+
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
@@ -371,7 +380,6 @@ impl Integer {
 
         let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
         let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
-        
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
@@ -383,7 +391,7 @@ impl Integer {
 
                 let lhs_output = *lhs ^ (rhs.reverse() << 4);
                 let rhs_output = *rhs ^ (lhs.reverse() << 4);
-                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse(); 
+                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse();
 
                 *lhs = lhs_output;
                 *rhs = rhs_output;
@@ -399,21 +407,27 @@ impl Integer {
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
-
             unsafe {
-                
                 let limb_ptr = &limb.0 as *const u8x64;
 
-                let reversed_limb: u8x64 = u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
+                let reversed_limb: u8x64 =
+                    u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
                 limb.0 = (limb.0 << 4) >> 4;
 
                 *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
-                *limb = _mm512_mask_add_epi8(limb.0.into(), overflowed as u64, limb.0.into(), _mm512_set1_epi64(1)).into();
+                *limb = _mm512_mask_add_epi8(
+                    limb.0.into(),
+                    overflowed as u64,
+                    limb.0.into(),
+                    _mm512_set1_epi64(1),
+                )
+                .into();
                 overflowed = false;
 
                 loop {
-                    let carry_mask: __mmask64 = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                    let carry_mask: __mmask64 =
+                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
                     } else if carry_mask == 0 {

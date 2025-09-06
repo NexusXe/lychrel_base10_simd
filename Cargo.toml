@@ -13,6 +13,7 @@ no-verify = []
 compile-time = "0.2.0"
 # rayon = "1.11.0"
 affinity = "0.1"
+windows = { version = "0", features = ["Win32_System_Memory", "Win32_System_Threading"] }
 
 [dev-dependencies]
 rand = "0.9"
