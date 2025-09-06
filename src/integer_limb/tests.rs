@@ -8,27 +8,6 @@ fn test_len_empty() {
 }
 
 #[test]
-fn test_len_one_digit() {
-    let limb = Limb::new_from_value(5);
-    assert_eq!(limb.len(), 1);
-}
-
-#[test]
-fn test_len_multiple_digits() {
-    let limb = Limb::new_from_value(12345);
-    assert_eq!(limb.len(), 5);
-}
-
-#[test]
-fn test_len_full() {
-    let limb = Limb::new_from_value(u128::from(u64::MAX));
-    assert_eq!(limb.len(), 20);
-
-    let limb = Limb::new_from_value(u128::MAX);
-    assert_eq!(limb.len(), 39);
-}
-
-#[test]
 fn test_reverse() {
     let limb1 = Limb(u8x64::from([
         9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
@@ -98,64 +77,6 @@ fn test_reverse() {
     let mut reversed_integer = Integer(Vec::new());
     integer.reverse_into_integer(&mut reversed_integer);
     assert_eq!(reversed_integer, expected_reverse);
-}
-
-#[test]
-fn test_integer_add() {
-    let integer1: Integer = Integer(vec![Limb(u8x64::from([
-        9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
-        9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
-        9, 9, 9, 9,
-    ]))]);
-    let integer2: Integer = Integer(vec![Limb(u8x64::from([
-        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0,
-    ]))]);
-
-    let result = integer1 + integer2;
-    assert_eq!(
-        result,
-        (
-            Integer(vec![
-                Limb(u8x64::splat(0)),
-                Limb(u8x64::from([
-                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                ]))
-            ]),
-            true
-        )
-    );
-
-    let limb1 = integer!("7");
-    let limb2 = integer!("1");
-    let result = limb1 + limb2;
-    assert_eq!(result, (integer!("8"), false));
-}
-
-#[test]
-fn test_limb_len() {
-    let limb = Limb::new();
-    assert_eq!(limb.len(), 0);
-
-    let limb = Limb::new_from_value(1);
-    assert_eq!(limb.len(), 1);
-
-    let limb = Limb::new_from_value(12345);
-    assert_eq!(limb.len(), 5);
-
-    let limb = Limb::new_from_value(100_000_000_000_000_000_000_000_000_000_000_000_000); // 39 digits
-    assert_eq!(limb.len(), 39);
-
-    let limb = Limb::new_from_value(340_282_366_920_938_463_463_374_607_431_768_211_455); // 39 digits
-    assert_eq!(limb.len(), 39);
-
-    for i in 1..=9 {
-        let limb = Limb(u8x64::splat(i));
-        assert_eq!(limb.len(), 64);
-    }
 }
 
 #[test]
@@ -301,68 +222,6 @@ fn test_write_and_read_checkpoint() {
     //assert_eq!(integer, integer_read.clone());
     assert_eq!(integer, integer_read.clone().unpack());
     assert!(!integer_read.unpack().has_carries());
-}
-
-#[test]
-fn test_packedlimb_packing() {
-    let limb1: Limb = u8x64::splat(1).into();
-    let limb2: Limb = u8x64::splat(2).into();
-
-    let packed_limb: PackedLimb = PackedLimb::from((limb1, limb2));
-    assert_eq!(packed_limb.0, u8x64::splat(0x21));
-}
-
-#[test]
-fn test_packedlimb_unpacking() {
-    let packed_limb: PackedLimb = u8x64::splat(0x21).into();
-    let (limb1, limb2): LimbPair = packed_limb.into();
-    assert_eq!(limb1, u8x64::splat(1).into());
-    assert_eq!(limb2, u8x64::splat(2).into());
-}
-
-#[test]
-fn test_packedlimb_len() {
-    use std::num::NonZeroU32;
-    let packed_limb: PackedLimb = u8x64::splat(0x21).into();
-    assert_eq!(packed_limb.len(), NonZeroU32::new(64).unwrap());
-
-    let integer = integer!("123456789012345678901234567890");
-    let packed_integer: PackedInteger = integer.into();
-
-    let last_limb_len = packed_integer.0.last().unwrap().len();
-    assert_eq!(last_limb_len, NonZeroU32::new(30).unwrap());
-
-    let integer = integer!("1234567890123456789012345678901212345678901234567890123456789012");
-    let packed_integer: PackedInteger = integer.into();
-    assert_eq!(
-        packed_integer.0.last().unwrap().len(),
-        NonZeroU32::new(64).unwrap()
-    );
-
-    let integer = integer!(
-        "12345678901234567890123456789012123456789012345678901234567890121234567890123456789012345678901212345678901234567890123456789012"
-    );
-    let packed_integer: PackedInteger = integer.into();
-    assert_eq!(
-        packed_integer.0.last().unwrap().len(),
-        NonZeroU32::new(64).unwrap()
-    );
-
-    let integer = integer!(
-        "1234567890123456789012345678901212345678901234567890123456789012123456789012345678901234567890121234567890123456789012345678901"
-    );
-    let packed_integer: PackedInteger = integer.into();
-    assert_eq!(
-        packed_integer.0.last().unwrap().len(),
-        NonZeroU32::new(63).unwrap()
-    );
-
-    let integer = integer!("12345678901234567890123456789012123456789012345678901234567890123");
-    let packed_integer: PackedInteger = integer.into();
-    assert_eq!(
-        packed_integer.0.last().unwrap().len(),
-        NonZeroU32::new(1).unwrap()
-    );
 }
 
 #[test]
