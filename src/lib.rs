@@ -10,6 +10,11 @@
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
+#![feature(cfg_overflow_checks)]
+#![feature(const_default)]
+#![feature(const_clone)]
+#![feature(const_precise_live_drops)]
+#![feature(const_index)]
 #![deny(clippy::all)]
 
 pub mod integer_limb;

@@ -6,6 +6,8 @@ use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::simd::prelude::*;
 
+
+
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
@@ -153,7 +155,7 @@ impl Limb {
     }
 }
 
-impl Default for Limb {
+impl const std::default::Default for Limb {
     fn default() -> Self {
         Self::new()
     }

@@ -10,6 +10,11 @@
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
+#![feature(cfg_overflow_checks)]
+#![feature(const_default)]
+#![feature(const_clone)]
+#![feature(const_precise_live_drops)]
+#![feature(const_index)]
 #![deny(clippy::all)]
 
 mod integer_limb;
@@ -21,6 +26,11 @@ use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
+
+use windows::Win32::System::Memory::{
+    GetLargePageMinimum, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc2,
+};
+use windows::Win32::System::Threading::GetCurrentProcess;
 
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
@@ -115,6 +125,28 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
+
+    const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
+
+    #[cfg(debug_assertions)]
+    {
+        let large_page_size = unsafe { GetLargePageMinimum() };
+        assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
+    }
+
+    let process_handle = unsafe { GetCurrentProcess() };
+
+    let large_page_storage = unsafe {
+        let ptr = VirtualAlloc2(
+            Some(process_handle),
+            None, // Let the OS determine the address
+            HUGE_PAGE_SIZE_BYTES,
+            MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, // Request large pages
+            PAGE_READWRITE.0,
+            None
+        ) as *mut u8x64;
+        std::slice::from_raw_parts_mut(ptr, std::mem::size_of::<Limb>())
+    };
 
     let mut initial_value: Integer = integer!(INITIAL_SEED);
     let mut starting_iteration: usize = 1;
