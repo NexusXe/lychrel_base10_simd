@@ -6,11 +6,12 @@ use std::fmt::Write;
 use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
+use std::mem::transmute;
 use std::mem::zeroed;
 
 use std::alloc::Global as GlobalAllocator;
-use std::simd::prelude::*;
 use std::ptr;
+use std::simd::prelude::*;
 
 #[cfg(target_os = "windows")]
 use windows::{
@@ -81,23 +82,23 @@ impl HugePageAllocator {
             Ok(())
         }
     }
-    
+
     #[cfg(target_family = "windows")]
     pub(crate) fn init() -> Result<Self, Box<dyn std::error::Error>> {
         let process_handle = unsafe { GetCurrentProcess() };
         Self::enable_memory_lock_privilege(process_handle)?;
         Ok(Self)
-   }
+    }
 
-   #[cfg(target_family = "unix")]
-   pub(crate) fn init() -> Result<Self> {
+    #[cfg(target_family = "unix")]
+    pub(crate) fn init() -> Result<Self> {
         todo!()
-   }
+    }
 
-   #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
-   pub(crate) fn init() -> Result<Self> {
+    #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
+    pub(crate) fn init() -> Result<Self> {
         unimplemented!()
-   }
+    }
 }
 
 unsafe impl Allocator for HugePageAllocator {
@@ -114,10 +115,7 @@ unsafe impl Allocator for HugePageAllocator {
         let size = layout.size();
 
         if size == 0 {
-            return Ok(ptr::NonNull::slice_from_raw_parts(
-                layout.dangling(),
-                0,
-            ));
+            return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling(), 0));
         }
 
         unsafe {
@@ -150,7 +148,8 @@ unsafe impl Allocator for HugePageAllocator {
             };
 
             //let allocation_size = aligned_size;
-            let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+            let allocation_size =
+                aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
             //eprintln!("Allocating {allocation_size} bytes");
 
             let ptr = VirtualAlloc2(
@@ -195,7 +194,6 @@ pub(crate) struct Limb(pub(crate) u8x64);
 impl const std::cmp::PartialEq for Limb {
     fn eq(&self, other: &Self) -> bool {
         const fn eq_const(lhs: u8x64, rhs: u8x64) -> bool {
-            use std::mem::transmute;
             let arr1 = lhs.to_array();
             let arr2 = rhs.to_array();
             let arr1_64b: [u64; 8] = unsafe { transmute(arr1) };
@@ -270,11 +268,12 @@ impl Limb {
 
     #[inline]
     fn has_carries(&self) -> bool {
-        // TODO: make portable
-        let self_vector: __m512i = (*self).into();
-        let compare: __m512i = __m512i::from(u8x64::splat(10));
-        let carries = unsafe { _mm512_cmpge_epu8_mask(self_vector, compare) };
-        carries != 0
+        for byte in self.0.as_array() {
+            if *byte >= 10 {
+                return true;
+            }
+        }
+        false
     }
 
     #[inline]
@@ -285,29 +284,24 @@ impl Limb {
 
     #[inline]
     fn len(&self) -> usize {
-        // TODO: make portable
-        let zero: __m512i = __m512i::from(u8x64::splat(0));
-        let digit_mask = unsafe { _mm512_cmpeq_epu8_mask(self.0.into(), zero) };
-        64 - digit_mask.leading_ones() as usize
+        let zeros = u8x64::splat(0);
+        let eq_mask = self.0.simd_ne(zeros);
+        let bitmask = eq_mask.to_bitmask();
+        64 - bitmask.leading_zeros() as usize
     }
 
     fn pack(self, other: Self) -> Self {
-        // TODO: make portable
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
 
-        let self_vector: __m512i = self.into();
-        let other_vector: __m512i = other.into();
+        debug_assert_eq!(u8x64::splat(0), self.0 & u8x64::splat(0xF0));
+        debug_assert_eq!(u8x64::splat(0), other.0 & u8x64::splat(0xF0));
 
-        debug_assert_eq!(u8x64::splat(0), unsafe {
-            _mm512_and_epi64(self_vector, u8x64::splat(0xF0).into()).into()
-        });
-        debug_assert_eq!(u8x64::splat(0), unsafe {
-            _mm512_and_epi64(other_vector, u8x64::splat(0xF0).into()).into()
-        });
-
-        let other_shifted = unsafe { _mm512_slli_epi64(other_vector, 4) };
-        unsafe { _mm512_or_si512(self_vector, other_shifted) }.into()
+        unsafe {
+            let other_u64: u64x8 = transmute(other.0);
+            let other_shifted: u8x64 = transmute(other_u64 << 4);
+            Limb(self.0 ^ other_shifted)
+        }
     }
 
     #[inline]
@@ -336,18 +330,18 @@ impl Limb {
         Ok(())
     }
 
-    /// A "Simple Example" for "byte-granularity bit rotate"
-    /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn ror4_galois(input: u8x64) -> u8x64 {
-        // TODO: make portable..?
-        let input_vec: __m512i = input.into();
-        unsafe {
-            let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
-            _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
-        }
-    }
+    // /// A "Simple Example" for "byte-granularity bit rotate"
+    // /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
+    // #[allow(dead_code)]
+    // #[inline]
+    // pub(crate) fn ror4_galois(input: u8x64) -> u8x64 {
+    //     // TODO: make portable..?
+    //     let input_vec: __m512i = input.into();
+    //     unsafe {
+    //         let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
+    //         _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
+    //     }
+    // }
 }
 
 impl const std::default::Default for Limb {
@@ -360,10 +354,12 @@ impl std::ops::Add for Limb {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        // TODO: make portable
-        //unsafe { _mm512_add_epi8(self.into(), other.into()) }.into()
-        //Limb(self.0 + other.0) // should compile to be the same
-        unsafe { _mm512_add_epi64(self.into(), other.into()) }.into() // use larger object size because each number will never overflow its byte boundary
+        unsafe {
+            let input_64: u64x8 = transmute(self.0);
+            let other_64: u64x8 = transmute(other.0);
+            let output_64: u64x8 = input_64 + other_64;
+            Limb(transmute::<u64x8, u8x64>(output_64))
+        }
     }
 }
 
@@ -592,7 +588,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if overflowed {
-            unsafe { *( rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
+            unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
         } else {
             self.0.pop();
         }

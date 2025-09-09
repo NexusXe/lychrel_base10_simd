@@ -280,8 +280,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{}:{} {i}; {rate:.2} iter/sec",
             if log_idx == 0 { 16 } else { log_idx },
-            if (log_idx < 10) && log_idx > 0 { " " } else { "" },
-            
+            if (log_idx < 10) && log_idx > 0 {
+                " "
+            } else {
+                ""
+            },
         );
 
         if current_value.is_some() {
@@ -351,20 +354,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            print!(
-                "{:} limbs, approx. {:} digits, ",
-                num_limbs,
-                num_limbs * 64,
-            );
+            print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64,);
             if let Some(usage) = memory_stats::memory_stats() {
-                print!("{:} MiB physical memory, ", usage.physical_mem / (1024 * 1024));
+                print!(
+                    "{:} MiB physical memory, ",
+                    usage.physical_mem / (1024 * 1024)
+                );
                 println!("{:} MiB virtual memory.", usage.virtual_mem / (1024 * 1024));
             } else {
                 println!("{:} KiB of memory", (num_limbs * 64) / 1024);
             }
-            use std::intrinsics::{fmul_fast, fdiv_fast};
+            use std::intrinsics::{fdiv_fast, fmul_fast};
             let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
-            println!("Current data rate: {:.2} GiBps", unsafe{fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)});
+            println!("Current data rate: {:.2} GiBps", unsafe {
+                fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)
+            });
             // current rate = 64(num_limbs) / 1073741824
         }
     }
