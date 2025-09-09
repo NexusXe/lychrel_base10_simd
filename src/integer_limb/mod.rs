@@ -491,6 +491,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
+        use std::ptr::read_unaligned;
         // TODO: make portable...?
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
@@ -542,11 +543,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             unsafe {
                 let limb_ptr = &limb.0 as *const u8x64;
 
-                let reversed_limb: u8x64 =
-                    u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
+                let reversed_limb: u8x64 = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
+
                 limb.0 = (limb.0 << 4) >> 4;
 
-                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+                *limb = Limb(transmute::<u64x8, u8x64>(transmute::<u8x64, u64x8>(limb.0) + transmute::<u8x64, u64x8>(reversed_limb)));
 
                 *limb = _mm512_mask_add_epi64(
                     limb.0.into(),
@@ -558,9 +559,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 overflowed = false;
 
                 loop {
-                    let carry_mask: __mmask64 =
-                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                     let carry_mask: __mmask64 =
+                         _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                    //let carry_mask: mask8x64 = limb.0.simd_ge(u8x64::splat(10));
+
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                    //if carry_mask.test(63) {
                         overflowed = true;
                     } else if carry_mask == 0 {
                         cold_path();
