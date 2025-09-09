@@ -549,22 +549,28 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 *limb = Limb(transmute::<u64x8, u8x64>(transmute::<u8x64, u64x8>(limb.0) + transmute::<u8x64, u64x8>(reversed_limb)));
 
-                *limb = _mm512_mask_add_epi64(
+                #[cfg(target_feature = "avx512bw")]
+                {*limb = _mm512_mask_add_epi64(
                     limb.0.into(),
                     overflowed as u8,
                     limb.0.into(),
                     _mm512_set1_epi64(1),
                 )
-                .into();
+                .into();}
+
+                #[cfg(not(target_feature = "avx512bw"))]
+                if overflowed {
+                    limb.0.as_mut_array()[0] += 1;
+                }
+
                 overflowed = false;
 
+                #[cfg(target_feature = "avx512bw")]
                 loop {
                      let carry_mask: __mmask64 =
                          _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
-                    //let carry_mask: mask8x64 = limb.0.simd_ge(u8x64::splat(10));
 
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
-                    //if carry_mask.test(63) {
                         overflowed = true;
                     } else if carry_mask == 0 {
                         cold_path();
@@ -587,6 +593,29 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         _mm512_set1_epi8(1),
                     )
                     .into();
+                }
+            
+                #[cfg(not(target_feature = "avx512bw"))]
+                loop {
+                    let carry_mask: mask8x64 = limb.0.simd_ge(u8x64::splat(10));
+                    if carry_mask.test(63) {
+                        overflowed = true;
+                    } else if !carry_mask.any() {
+                        cold_path();
+                        break
+                    }
+
+                    ever_carried = true;
+
+                    for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
+                        if carry_mask.test(idx) {
+                            *byte -= 10;
+                        }
+
+                        if carry_mask.shift_elements_right::<1usize>(false).test(idx) {
+                            *byte += 1;
+                        }
+                    }
                 }
             }
         }
