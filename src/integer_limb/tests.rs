@@ -63,7 +63,7 @@ fn test_pack_unpack_limb_random() {
 
         let integer = Integer(vec![limb1, limb2]);
         let packed = integer.clone().pack();
-        assert_eq!(packed.clone().unpack(), integer);
+        assert_eq!(packed.clone().unpack(GlobalAllocator), integer);
 
         let bytes: Vec<u8> = packed.clone().into_bytes();
         let organized_bytes: Vec<[u8; 64]> = bytes
@@ -71,9 +71,9 @@ fn test_pack_unpack_limb_random() {
             .map(|chunk| chunk.try_into().unwrap())
             .collect();
 
-        let reconstructed = Integer::from_bytes(organized_bytes);
+        let reconstructed = Integer::from_bytes(organized_bytes, GlobalAllocator);
         assert_eq!(reconstructed, packed);
-        assert_eq!(reconstructed.unpack(), integer);
+        assert_eq!(reconstructed.unpack(GlobalAllocator), integer);
     }
 
     test_with_seed(0xdead_beef);
@@ -84,16 +84,16 @@ fn test_pack_unpack_limb_random() {
 fn test_pack_unpack_integer() {
     let limb1: Limb = u8x64::splat(9).into();
     let limb2: Limb = u8x64::splat(1).into();
-    let integer: Integer = Integer(vec![limb1, limb2]);
+    let integer = Integer(vec![limb1, limb2]);
     let packed = integer.pack();
     assert_eq!(packed, Integer(vec![u8x64::splat(0x19).into()]));
 
     let packed = Integer(vec![u8x64::splat(0x19).into()]);
-    let unpacked = packed.unpack();
+    let unpacked = packed.unpack(GlobalAllocator);
     assert_eq!(unpacked, Integer(vec![limb1, limb2]));
 
     let packed = Integer(vec![u8x64::splat(0x19).into(); 4]);
-    let unpacked = packed.unpack();
+    let unpacked = packed.unpack(GlobalAllocator);
     assert_eq!(
         unpacked,
         Integer(vec![limb1, limb2, limb1, limb2, limb1, limb2, limb1, limb2])
@@ -128,7 +128,7 @@ fn test_write_and_read_checkpoint() {
 
     let integer = Integer(limbs);
     assert!(!integer.has_carries());
-    assert_eq!(integer, integer.clone().pack().unpack());
+    assert_eq!(integer, integer.clone().pack().unpack(GlobalAllocator));
 
     // instead of writing to an actual file, write to a buffer
     let mut buffer = Vec::new();
@@ -145,11 +145,11 @@ fn test_write_and_read_checkpoint() {
         .chunks(64)
         .map(|chunk| chunk.try_into().unwrap())
         .collect();
-    let integer_read = Integer::from_bytes(organized_bytes);
+    let integer_read = Integer::from_bytes(organized_bytes, GlobalAllocator);
 
     //assert_eq!(integer, integer_read.clone());
-    assert_eq!(integer, integer_read.clone().unpack());
-    assert!(!integer_read.unpack().has_carries());
+    assert_eq!(integer, integer_read.clone().unpack(GlobalAllocator));
+    assert!(!integer_read.unpack(GlobalAllocator).has_carries());
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn test_reverse_interleave_limbs() {
     let mut a: u8x64 = [1u8; 64].into();
     let mut b: u8x64 = [2u8; 64].into();
 
-    Integer::reverse_interleave_x2(&mut a, &mut b);
+    Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
 
     assert_eq!(a, [0x21u8; 64].into());
     assert_eq!(b, [0x12u8; 64].into());
@@ -165,7 +165,7 @@ fn test_reverse_interleave_limbs() {
     let mut a: u8x64 = [9u8; 64].into();
     let mut b: u8x64 = [0u8; 64].into();
 
-    Integer::reverse_interleave_x2(&mut a, &mut b);
+    Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
 
     assert_eq!(a, [0x09u8; 64].into());
     assert_eq!(b, [0x90u8; 64].into());
@@ -220,7 +220,7 @@ fn test_fused_reverse_add_asm_interleave() {
     assert_eq!(integer3, integer!("22222222222222222222222222222222"));
     assert!(!ever_carried);
 
-    let mut integer4: Integer = Integer(vec![Limb(u8x64::splat(9))]);
+    let mut integer4 = Integer(vec![Limb(u8x64::splat(9))]);
     let ever_carried = integer4.fused_reverse_add_asm_interleave();
     assert_eq!(
         integer4,
@@ -231,7 +231,7 @@ fn test_fused_reverse_add_asm_interleave() {
 
 #[test]
 fn test_asm_bug_interleave() {
-    let mut integer: Integer = integer!(
+    let mut integer = integer!(
         "73482637274560972997068201320438586559407609388647198764094354927116546966373665141586612278184850999294014223899962612538861846880665005592035821032128969264317433200141231772473459431601149579858274630230771087005620368093635487002423793478228705697976867255505359764767301851874010697230735809434080225388354718502970643860097"
     );
     let ever_carried = integer.fused_reverse_add_asm_interleave();

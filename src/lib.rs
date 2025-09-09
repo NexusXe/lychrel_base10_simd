@@ -1,5 +1,5 @@
 #![feature(portable_simd)]
-#![feature(const_from)]
+#![feature(const_convert)]
 #![feature(const_trait_impl)]
 #![feature(likely_unlikely)]
 #![feature(cold_path)]
@@ -15,6 +15,8 @@
 #![feature(const_clone)]
 #![feature(const_precise_live_drops)]
 #![feature(const_index)]
+#![feature(allocator_api)]
+#![feature(alloc_layout_extra)]
 #![deny(clippy::all)]
 
 pub mod integer_limb;
