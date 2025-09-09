@@ -142,7 +142,8 @@ unsafe impl Allocator for HugePageAllocator {
             let large_page_size = GetLargePageMinimum();
             let aligned_size = (size.div_ceil(large_page_size) + 1) * large_page_size;
             //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
-            let alignment = HUGE_PAGE_SIZE_BYTES;
+            //let alignment = HUGE_PAGE_SIZE_BYTES;
+            let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
 
             let mut requirements = MEM_ADDRESS_REQUIREMENTS {
                 LowestStartingAddress: zeroed(),
@@ -164,12 +165,12 @@ unsafe impl Allocator for HugePageAllocator {
                 Anonymous1: MEM_EXTENDED_PARAMETER_0 {
                     _bitfield: MemExtendedParameterAttributeFlags.0 as u64, // Specify MEM_LARGE_PAGES
                 },
-                Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+                //Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+                Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 8u64 },
             };
 
-            //let allocation_size = aligned_size;
-            let allocation_size =
-                aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+            let allocation_size = aligned_size;
+            //let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
             //eprintln!("Allocating {allocation_size} bytes");
 
             let ptr = VirtualAlloc2(
