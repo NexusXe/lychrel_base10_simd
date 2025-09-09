@@ -1,6 +1,10 @@
 #![allow(unused)]
 use std::alloc::{AllocError, Allocator, Layout};
+#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+#[cfg(not(target_arch = "x86_64"))]
+use std::arch::x86::*;
+
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
@@ -12,6 +16,22 @@ use std::mem::zeroed;
 use std::alloc::Global as GlobalAllocator;
 use std::ptr;
 use std::simd::prelude::*;
+
+pub const LV_LEN: usize = 64;
+
+pub type LimbVec = Simd<u8, LV_LEN>;
+pub type LimbVecScalar = <std::simd::Simd<u8, LV_LEN> as std::simd::num::SimdUint>::Scalar;
+type LimbVecMask = Mask<u8, LV_LEN>;
+
+const WV_LEN: usize = LV_LEN / 8;
+type WideVec = Simd<u64, WV_LEN>;
+type WideVecScalar = <std::simd::Simd<u64, WV_LEN> as std::simd::num::SimdUint>::Scalar;
+
+const fn assert_good_vec_sizes() {
+    assert!(std::mem::size_of::<LimbVec>() == std::mem::size_of::<WideVec>());
+}
+
+const _: () = assert_good_vec_sizes();
 
 #[cfg(target_os = "windows")]
 use windows::{
@@ -189,16 +209,16 @@ unsafe impl Allocator for HugePageAllocator {
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
 #[derive(Clone, Copy)]
-pub(crate) struct Limb(pub(crate) u8x64);
+pub(crate) struct Limb(pub(crate) LimbVec);
 
 impl const std::cmp::PartialEq for Limb {
     fn eq(&self, other: &Self) -> bool {
-        const fn eq_const(lhs: u8x64, rhs: u8x64) -> bool {
+        const fn eq_const(lhs: LimbVec, rhs: LimbVec) -> bool {
             let arr1 = lhs.to_array();
             let arr2 = rhs.to_array();
-            let arr1_64b: [u64; 8] = unsafe { transmute(arr1) };
-            let arr2_64b: [u64; 8] = unsafe { transmute(arr2) };
-            let mut i: usize = 8;
+            let arr1_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr1) };
+            let arr2_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr2) };
+            let mut i: usize = WV_LEN;
             while i > 0 {
                 if arr1_64b[i] == arr2_64b[i] {
                     i -= 1;
@@ -209,7 +229,7 @@ impl const std::cmp::PartialEq for Limb {
             false
         }
 
-        fn eq_rt(lhs: u8x64, rhs: u8x64) -> bool {
+        fn eq_rt(lhs: LimbVec, rhs: LimbVec) -> bool {
             lhs == rhs
         }
 
@@ -219,6 +239,7 @@ impl const std::cmp::PartialEq for Limb {
 
 impl std::cmp::Eq for Limb {}
 
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
 impl From<Limb> for __m512i {
     #[inline]
     fn from(val: Limb) -> Self {
@@ -226,13 +247,14 @@ impl From<Limb> for __m512i {
     }
 }
 
-impl const From<Limb> for u8x64 {
+impl const From<Limb> for LimbVec {
     #[inline]
     fn from(val: Limb) -> Self {
         val.0
     }
 }
 
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
@@ -240,9 +262,9 @@ impl From<__m512i> for Limb {
     }
 }
 
-impl const From<u8x64> for Limb {
+impl const From<LimbVec> for Limb {
     #[inline]
-    fn from(val: u8x64) -> Self {
+    fn from(val: LimbVec) -> Self {
         Self(val)
     }
 }
@@ -250,15 +272,15 @@ impl const From<u8x64> for Limb {
 impl Limb {
     #[inline]
     pub(crate) const fn new() -> Self {
-        Self(u8x64::splat(0))
+        Self(LimbVec::splat(0))
     }
 
     pub(crate) fn new_from_value(value: u128) -> Self {
         let input_digits = value.to_string();
-        let mut digits = u8x64::splat(0);
+        let mut digits = LimbVec::splat(0);
         for (i, c) in input_digits.chars().rev().enumerate() {
             if let Some(digit) = c.to_digit(10) {
-                digits[i] = digit as u8;
+                digits[i] = digit as LimbVecScalar;
             } else {
                 panic!("Invalid digit in input value: {c}");
             }
@@ -278,28 +300,27 @@ impl Limb {
 
     #[inline]
     fn reverse(self) -> Self {
-        let self_u8x64: u8x64 = self.0;
-        Limb(self_u8x64.reverse())
+        Limb(self.0.reverse())
     }
 
     #[inline]
     fn len(&self) -> usize {
-        let zeros = u8x64::splat(0);
+        let zeros = LimbVec::splat(0);
         let eq_mask = self.0.simd_ne(zeros);
         let bitmask = eq_mask.to_bitmask();
-        64 - bitmask.leading_zeros() as usize
+        (LV_LEN - (bitmask.leading_zeros() as usize  - (64 - LV_LEN)))
     }
 
     fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
 
-        debug_assert_eq!(u8x64::splat(0), self.0 & u8x64::splat(0xF0));
-        debug_assert_eq!(u8x64::splat(0), other.0 & u8x64::splat(0xF0));
+        debug_assert_eq!(LimbVec::splat(0), self.0 & LimbVec::splat(0xF0));
+        debug_assert_eq!(LimbVec::splat(0), other.0 & LimbVec::splat(0xF0));
 
         unsafe {
-            let other_u64: u64x8 = transmute(other.0);
-            let other_shifted: u8x64 = transmute(other_u64 << 4);
+            let other_u64: WideVec = transmute(other.0);
+            let other_shifted: LimbVec = transmute(other_u64 << 4);
             Limb(self.0 ^ other_shifted)
         }
     }
@@ -309,12 +330,12 @@ impl Limb {
         (Limb((self.0 << 4) >> 4), Limb(self.0 >> 4))
     }
 
-    const fn into_bytes(self) -> [u8; 64] {
+    const fn into_bytes(self) -> [LimbVecScalar; LV_LEN] {
         self.0.to_array()
     }
 
-    const fn from_bytes(input: [u8; 64]) -> Self {
-        Self(u8x64::from_array(input))
+    const fn from_bytes(input: [LimbVecScalar; LV_LEN]) -> Self {
+        Self(LimbVec::from_array(input))
     }
 
     #[inline]
@@ -323,7 +344,7 @@ impl Limb {
     }
 
     fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.as_array();
         for i in digits.iter().rev() {
             write!(f, "{i}")?;
         }
@@ -334,7 +355,7 @@ impl Limb {
     // /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
     // #[allow(dead_code)]
     // #[inline]
-    // pub(crate) fn ror4_galois(input: u8x64) -> u8x64 {
+    // pub(crate) fn ror4_galois(input: LimbVec) -> LimbVec {
     //     // TODO: make portable..?
     //     let input_vec: __m512i = input.into();
     //     unsafe {
@@ -355,19 +376,19 @@ impl std::ops::Add for Limb {
 
     fn add(self, other: Self) -> Self::Output {
         unsafe {
-            let input_64: u64x8 = transmute(self.0);
-            let other_64: u64x8 = transmute(other.0);
-            let output_64: u64x8 = input_64 + other_64;
-            Limb(transmute::<u64x8, u8x64>(output_64))
+            let input_64: WideVec = transmute(self.0);
+            let other_64: WideVec = transmute(other.0);
+            let output_64: WideVec = input_64 + other_64;
+            Limb(transmute::<WideVec, LimbVec>(output_64))
         }
     }
 }
 
 impl std::fmt::Display for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.to_array();
         for i in digits.iter().rev() {
-            if i > &9u8 {
+            if *i > 9 as LimbVecScalar {
                 write!(f, "\x1b[31m{i}\x1b[0m")?;
             } else {
                 write!(f, "{i}")?;
@@ -379,7 +400,7 @@ impl std::fmt::Display for Limb {
 
 impl std::fmt::Debug for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.to_array();
         write!(f, "[")?;
         for i in &digits {
             write!(f, "{i}")?;
@@ -447,23 +468,23 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         // however, the digits are misaligned
 
         // safe because of the check at the top
-        let skip_len: usize = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+        let skip_len: usize = LV_LEN - unsafe { self.0.last().unwrap_unchecked() }.len();
 
         output_vec.push(Limb::new());
 
         let vec_beginning_ptr = output_vec.as_mut_ptr().cast::<u8>();
-        let output_len_bytes = output_vec.len() * 64;
+        let output_len_bytes = output_vec.len() * LV_LEN;
 
         let output_slice =
             unsafe { std::slice::from_raw_parts_mut(vec_beginning_ptr, output_len_bytes) };
 
         debug_assert_eq!(
-            output_slice[(output_slice.len() - 64)..output_slice.len()],
-            [0; 64]
+            output_slice[(output_slice.len() - LV_LEN)..output_slice.len()],
+            [0; LV_LEN]
         );
 
-        let right_bound = output_slice.len() - (64 - skip_len);
-        if !(right_bound - skip_len).is_multiple_of(64) {
+        let right_bound = output_slice.len() - (LV_LEN - skip_len);
+        if !(right_bound - skip_len).is_multiple_of(LV_LEN) {
             #[cfg(debug_assertions)]
             unreachable!("Reversal memory copy is not a multiple of 64 bytes");
 
@@ -478,7 +499,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
+    fn reverse_interleave_x2(lhs: &mut LimbVec, rhs: &mut LimbVec) {
         // logically these are just bitwise ANDs; however, since the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
         // latency and (somehow) doesn't use an FPU pipe
@@ -509,10 +530,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         self.0.push(Limb::new()); // padding
 
-        let skip_len = 64 - self.0[total_limbs - 1].len();
+        let skip_len = LV_LEN - self.0[total_limbs - 1].len();
 
-        let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
-        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
+        let limbs_ptr = self.0.as_mut_ptr() as *mut LimbVec;
+        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut LimbVec;
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
@@ -541,15 +562,19 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .take_while(|(idx, _)| idx < &total_limbs)
         {
             unsafe {
-                let limb_ptr = &limb.0 as *const u8x64;
+                let limb_ptr = &limb.0 as *const LimbVec;
 
-                let reversed_limb: u8x64 = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
+                let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
-                *limb = Limb(transmute::<u64x8, u8x64>(transmute::<u8x64, u64x8>(limb.0) + transmute::<u8x64, u64x8>(reversed_limb)));
+                *limb = Limb(transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(limb.0) + transmute::<LimbVec, WideVec>(reversed_limb)));
 
-                #[cfg(target_feature = "avx512bw")]
+                // target-cpu = x86-64-v2:  287.6 sec
+                // target-cpu = x86-64-v3:  266.1 sec
+                // target-cpu = x86-64-v4:  15.1 sec
+                // target-cpu = znver5:     14.5 sec
+                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
                 {*limb = _mm512_mask_add_epi64(
                     limb.0.into(),
                     overflowed as u8,
@@ -558,14 +583,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 )
                 .into();}
 
-                #[cfg(not(target_feature = "avx512bw"))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
                 if overflowed {
                     limb.0.as_mut_array()[0] += 1;
                 }
 
                 overflowed = false;
 
-                #[cfg(target_feature = "avx512bw")]
+                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 loop {
                      let carry_mask: __mmask64 =
                          _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
@@ -595,10 +620,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
                 }
             
-                #[cfg(not(target_feature = "avx512bw"))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
                 loop {
-                    let carry_mask: mask8x64 = limb.0.simd_ge(u8x64::splat(10));
-                    if carry_mask.test(63) {
+                    let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
+                    if carry_mask.test(LV_LEN - 1) {
                         overflowed = true;
                     } else if !carry_mask.any() {
                         cold_path();
@@ -735,7 +760,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        unsafe { ((self.0.len() - 1) * 64) + self.0.last().unwrap_unchecked().len() }
+        unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
     }
 
     pub(crate) fn pack(self) -> Integer<GlobalAllocator> {
@@ -799,7 +824,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[inline]
     pub(crate) fn into_bytes(self) -> Vec<u8> {
-        let mut output: Vec<u8> = Vec::with_capacity(self.0.len() * 64);
+        let mut output: Vec<LimbVecScalar> = Vec::with_capacity(self.0.len() * LV_LEN);
         for limb in &self.0 {
             output.extend_from_slice(&limb.into_bytes());
         }
@@ -808,7 +833,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn from_bytes(input: Vec<[u8; 64]>, allocator: T) -> Integer<T> {
+    pub fn from_bytes(input: Vec<[LimbVecScalar; LV_LEN]>, allocator: T) -> Integer<T> {
         let mut output = Vec::with_capacity_in(input.len(), allocator);
         for limb in &input {
             output.push(Limb::from_bytes(*limb));
@@ -834,8 +859,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn chop(data: Vec<u8>) -> Option<Vec<[u8; 64]>> {
-        data.chunks(64).map(|chunk| chunk.try_into().ok()).collect()
+    pub fn chop(data: Vec<u8>) -> Option<Vec<[LimbVecScalar; LV_LEN]>> {
+        data.chunks(LV_LEN).map(|chunk| chunk.try_into().ok()).collect()
     }
 
     pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -922,7 +947,7 @@ impl<T: Allocator + Clone + Copy> std::cmp::Eq for Integer<T> {}
 macro_rules! integer {
     ($value:expr) => {{
         let value_str: &str = $value;
-        let mut limbs: Vec<Limb> = Vec::with_capacity(value_str.len() / 64 + 1);
+        let mut limbs: Vec<Limb> = Vec::with_capacity(value_str.len() / $crate::integer_limb::LV_LEN + 1);
         let mut current_limb_digits: Vec<u8> = Vec::new();
 
         for digit in value_str.chars().rev() {
@@ -931,22 +956,22 @@ macro_rules! integer {
             }
             current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
 
-            if current_limb_digits.len() == 64 {
-                let mut limb_bytes: [u8; 64] = [0; 64];
+            if current_limb_digits.len() == $crate::integer_limb::LV_LEN {
+                let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
                 for (i, &digit) in current_limb_digits.iter().enumerate() {
                     limb_bytes[i] = digit;
                 }
-                limbs.push(Limb(std::simd::prelude::u8x64::from(limb_bytes)));
+                limbs.push(Limb($crate::integer_limb::LimbVec::from(limb_bytes)));
                 current_limb_digits.clear();
             }
         }
 
         if !current_limb_digits.is_empty() {
-            let mut limb_bytes: [u8; 64] = [0; 64];
+            let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
             for (i, &digit) in current_limb_digits.iter().enumerate() {
                 limb_bytes[i] = digit;
             }
-            limbs.push(Limb(std::simd::prelude::u8x64::from(limb_bytes)));
+            limbs.push(Limb($crate::integer_limb::LimbVec::from(limb_bytes)));
         }
 
         Integer(limbs)

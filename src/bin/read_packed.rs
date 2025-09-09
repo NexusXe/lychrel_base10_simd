@@ -70,7 +70,7 @@ fn main() {
         }
     };
 
-    let data: Vec<[u8; 64]> = match Integer::<Global>::chop(file) {
+    let data: Vec<[LimbVecScalar; LV_LEN]> = match Integer::<Global>::chop(file) {
         None => {
             eprintln!("\x1b[1;31merror\x1b[0m: file length is not a multiple of 64 bytes");
             std::process::exit(1);

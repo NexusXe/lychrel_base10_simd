@@ -1,5 +1,5 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true"]
+# rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true"]
 
 [unstable]
 # build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]

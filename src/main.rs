@@ -20,7 +20,10 @@
 #![deny(clippy::all)]
 
 mod integer_limb;
-use integer_limb::{Checkpoint, HugePageAllocator, Integer, Limb};
+#[cfg(target_pointer_width = "64")]
+use integer_limb::HugePageAllocator;
+
+use integer_limb::{Checkpoint, Integer, Limb};
 use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, unlikely};
 use std::path::{Path, PathBuf};
@@ -131,14 +134,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
 
+    #[cfg(target_pointer_width = "64")]
     let allocator = HugePageAllocator::init()?;
 
+    #[cfg(not(target_pointer_width = "64"))]
+    let allocator = Global;
+
     let initial_limb = Limb::new_from_value(INITIAL_SEED);
-    let mut internal_vec: Vec<Limb, HugePageAllocator> = Vec::new_in(allocator);
+    let mut internal_vec: Vec<Limb, _> = Vec::new_in(allocator);
 
     internal_vec.push(initial_limb);
 
-    let mut initial_value = Integer::<HugePageAllocator>(internal_vec);
+    let mut initial_value = Integer(internal_vec);
     let mut starting_iteration: usize = 1;
 
     let args: Vec<String> = std::env::args().collect();
@@ -221,7 +228,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let checkpoint =
                             Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
                         (initial_value, starting_iteration) =
-                            Integer::from_checkpoint(checkpoint, HugePageAllocator);
+                            Integer::from_checkpoint(checkpoint, allocator);
                         println!("Starting from checkpoint at iteration {starting_iteration:}");
                         starting_iteration += 1;
                     }
