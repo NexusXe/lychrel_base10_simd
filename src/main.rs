@@ -1,5 +1,5 @@
 #![feature(portable_simd)]
-#![feature(const_from)]
+#![feature(const_convert)]
 #![feature(const_trait_impl)]
 #![feature(likely_unlikely)]
 #![feature(cold_path)]
@@ -10,13 +10,23 @@
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
 #![feature(iter_collect_into)]
+#![feature(cfg_overflow_checks)]
+#![feature(const_default)]
+#![feature(const_clone)]
+#![feature(const_precise_live_drops)]
+#![feature(const_index)]
+#![feature(allocator_api)]
+#![feature(alloc_layout_extra)]
 #![deny(clippy::all)]
 
 mod integer_limb;
+#[cfg(target_pointer_width = "64")]
+use integer_limb::HugePageAllocator;
+
 use integer_limb::{Checkpoint, Integer, Limb};
+use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, unlikely};
 use std::path::{Path, PathBuf};
-use std::simd::prelude::*;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -25,32 +35,33 @@ use std::time::Instant;
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
 
-pub struct IterationResult {
+pub struct IterationResult<T: Allocator + Clone + Copy> {
     last_iteration: usize,
     start_time: Instant,
-    end_integer: Integer,
+    end_integer: Integer<T>,
 }
 
 pub struct StatusReport {
     iteration: usize,
-    current_value: Option<Integer>,
+    current_value: Option<Integer<Global>>,
 }
 
 const CHECKPOINT_DIR: &str = "./checkpoints";
 
-const INITIAL_SEED: &str = "196";
 const LOG_FREQUENCY_EXP: usize = 14;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
-fn iterate(
+fn iterate<T: std::alloc::Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,
-    starting_integer: Integer,
+    starting_integer: Integer<T>,
     tx: Option<Sender<StatusReport>>,
-) -> IterationResult {
-    let mut current_iteration: Integer = starting_integer;
+) -> IterationResult<T> {
+    let mut current_iteration = starting_integer;
 
-    let mut carried: bool = false;
+    current_iteration.0.reserve(2048.min(range.end / 100));
+
+    let mut carried: bool = true; // ignore palindrome check on the first loop
     let mut i: usize = range.start;
 
     let start_time = Instant::now();
@@ -58,7 +69,8 @@ fn iterate(
     while likely(i < range.end) {
         if unlikely(!carried) {
             cold_path();
-            let mut reverse: Integer = Integer(Vec::with_capacity(current_iteration.0.len()));
+            eprintln!("Checking...");
+            let mut reverse = Integer(Vec::with_capacity(current_iteration.0.len()));
             current_iteration.reverse_into_integer(&mut reverse);
             if current_iteration.0 == reverse.0 {
                 cold_path();
@@ -67,12 +79,17 @@ fn iterate(
         }
         carried = current_iteration.fused_reverse_add_asm_interleave();
         if unlikely(i.is_multiple_of(LOG_MASK)) {
+            //eprintln!("{:} limbs, capacity: {:}", current_iteration.0.len(), current_iteration.0.capacity());
             let report = StatusReport {
                 iteration: i,
                 current_value: {
                     if unlikely(i.is_multiple_of(2usize.pow(18))) {
                         cold_path();
-                        Some(current_iteration.clone())
+                        // manually clone the current iteration into a new vector using the global allocator
+                        let mut output_vec =
+                            Vec::with_capacity_in(current_iteration.0.len(), Global);
+                        output_vec.extend_from_slice(&current_iteration.0);
+                        Some(Integer(output_vec))
                     } else {
                         None
                     }
@@ -103,6 +120,7 @@ fn iterate(
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    const INITIAL_SEED: u128 = 196;
     const LIMIT_SHORT: usize = 603_567;
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
@@ -111,12 +129,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compile_datetime = compile_time::datetime_str!();
     let rustc_version = compile_time::rustc_version_str!();
 
-    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}");
+    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n");
 
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
 
-    let mut initial_value: Integer = integer!(INITIAL_SEED);
+    #[cfg(target_pointer_width = "64")]
+    let allocator = HugePageAllocator::init()?;
+
+    #[cfg(not(target_pointer_width = "64"))]
+    let allocator = Global;
+
+    let initial_limb = Limb::new_from_value(INITIAL_SEED);
+    let mut internal_vec: Vec<Limb, _> = Vec::new_in(allocator);
+
+    internal_vec.push(initial_limb);
+
+    let mut initial_value = Integer(internal_vec);
     let mut starting_iteration: usize = 1;
 
     let args: Vec<String> = std::env::args().collect();
@@ -198,7 +227,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let used_checkpoint = std::fs::read(used_checkpoint_path)?;
                         let checkpoint =
                             Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
-                        (initial_value, starting_iteration) = Integer::from_checkpoint(checkpoint);
+                        (initial_value, starting_iteration) =
+                            Integer::from_checkpoint(checkpoint, allocator);
                         println!("Starting from checkpoint at iteration {starting_iteration:}");
                         starting_iteration += 1;
                     }
@@ -251,13 +281,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let log_idx = i.div_floor(LOG_MASK) % 16;
 
-        let rate: f32 =
-            unsafe { std::intrinsics::fdiv_fast(LOG_MASK as f32, elapsed_time.as_secs_f32()) };
+        let rate: f64 =
+            unsafe { std::intrinsics::fdiv_fast(LOG_MASK as f64, elapsed_time.as_secs_f64()) };
 
         println!(
-            "{}:{} {i}; {rate:} iter/sec",
+            "{}:{} {i}; {rate:.2} iter/sec",
             if log_idx == 0 { 16 } else { log_idx },
-            if log_idx < 10 { " " } else { "" }
+            if (log_idx < 10) && log_idx > 0 {
+                " "
+            } else {
+                ""
+            },
         );
 
         if current_value.is_some() {
@@ -327,12 +361,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            println!(
-                "{:} limbs, approx. {:} digits, {:} KiB of memory",
-                num_limbs,
-                num_limbs * 64,
-                (num_limbs * 64).div_ceil(1024)
-            );
+            print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64,);
+            if let Some(usage) = memory_stats::memory_stats() {
+                print!(
+                    "{:} MiB physical memory, ",
+                    usage.physical_mem / (1024 * 1024)
+                );
+                println!("{:} MiB virtual memory.", usage.virtual_mem / (1024 * 1024));
+            } else {
+                println!("{:} KiB of memory", (num_limbs * 64) / 1024);
+            }
+            use std::intrinsics::{fdiv_fast, fmul_fast};
+            let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
+            println!("Current data rate: {:.2} GiBps", unsafe {
+                fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)
+            });
+            // current rate = 64(num_limbs) / 1073741824
         }
     }
 

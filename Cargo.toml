@@ -8,12 +8,24 @@ default-run = "lychrel_base10_simd"
 
 [features]
 no-verify = []
+no-avx = []
 
 [dependencies]
-compile-time = "0.2.0"
+compile-time = "0.2"
 # rayon = "1.11.0"
 affinity = "0.1"
-windows = { version = "0", features = ["Win32_System_Memory", "Win32_System_Threading"] }
+
+[target.'cfg(target_family = "windows")'.dependencies]
+windows = { version = "0", features = [
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
+
+memory-stats = "1.2"
+
+[target.'cfg(target_family = "unix")'.dependencies]
+rustix = "1"
 
 [dev-dependencies]
 rand = "0.9"
@@ -27,7 +39,7 @@ overflow-checks = false
 codegen-units = 1
 lto = "fat"
 panic = "abort"
-rustflags = ["-Z", "fmt-debug=none"]
+rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 
 [profile.release.build-override]
 strip = true

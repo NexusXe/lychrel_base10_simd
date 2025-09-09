@@ -1,26 +1,224 @@
+#![allow(unused)]
+use std::alloc::{AllocError, Allocator, Layout};
+#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+#[cfg(not(target_arch = "x86_64"))]
+use std::arch::x86::*;
+
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
+use std::mem::transmute;
+use std::mem::zeroed;
+
+use std::alloc::Global as GlobalAllocator;
+use std::ptr;
 use std::simd::prelude::*;
+
+pub const LV_LEN: usize = 64;
+
+pub type LimbVec = Simd<u8, LV_LEN>;
+pub type LimbVecScalar = <std::simd::Simd<u8, LV_LEN> as std::simd::num::SimdUint>::Scalar;
+type LimbVecMask = Mask<u8, LV_LEN>;
+
+const WV_LEN: usize = LV_LEN / 8;
+type WideVec = Simd<u64, WV_LEN>;
+type WideVecScalar = <std::simd::Simd<u64, WV_LEN> as std::simd::num::SimdUint>::Scalar;
+
+const fn assert_good_vec_sizes() {
+    assert!(std::mem::size_of::<LimbVec>() == std::mem::size_of::<WideVec>());
+}
+
+const _: () = assert_good_vec_sizes();
+
+#[cfg(target_os = "windows")]
+use windows::{
+    Win32::{
+        Foundation::{CloseHandle, GetLastError, HANDLE, LUID},
+        Security::{
+            AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+            SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        },
+        System::{
+            Memory::{
+                GetLargePageMinimum, MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER,
+                MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1, MEM_LARGE_PAGES, MEM_RELEASE,
+                MEM_RESERVE, MemExtendedParameterAddressRequirements,
+                MemExtendedParameterAttributeFlags, PAGE_READWRITE, VirtualAlloc, VirtualAlloc2,
+                VirtualFree,
+            },
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    },
+    core::{Result as WinResult, w},
+};
+
+#[derive(Clone, Copy)]
+pub(crate) struct HugePageAllocator;
+
+impl HugePageAllocator {
+    #[cfg(target_os = "windows")]
+    fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
+        unsafe {
+            let mut token_handle: HANDLE = zeroed();
+
+            OpenProcessToken(
+                process_handle,
+                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                &mut token_handle,
+            )?;
+
+            let mut luid: LUID = zeroed();
+
+            LookupPrivilegeValueW(None, w!("SeLockMemoryPrivilege"), &mut luid)?;
+
+            let token_privileges = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+
+            AdjustTokenPrivileges(
+                token_handle,
+                false,
+                Some(&token_privileges),
+                size_of::<TOKEN_PRIVILEGES>() as u32,
+                None,
+                None,
+            )?;
+
+            let last_error = GetLastError();
+
+            CloseHandle(token_handle)?;
+
+            if last_error.is_err() {
+                return Err(last_error.to_hresult().into());
+            }
+
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "windows")]
+    pub(crate) fn init() -> Result<Self, Box<dyn std::error::Error>> {
+        let process_handle = unsafe { GetCurrentProcess() };
+        Self::enable_memory_lock_privilege(process_handle)?;
+        Ok(Self)
+    }
+
+    #[cfg(target_family = "unix")]
+    pub(crate) fn init() -> Result<Self> {
+        todo!()
+    }
+
+    #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
+    pub(crate) fn init() -> Result<Self> {
+        unimplemented!()
+    }
+}
+
+unsafe impl Allocator for HugePageAllocator {
+    #[cfg(target_os = "windows")]
+    fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
+        const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
+
+        #[cfg(debug_assertions)]
+        {
+            let large_page_size = unsafe { GetLargePageMinimum() };
+            assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
+        }
+
+        let size = layout.size();
+
+        if size == 0 {
+            return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling(), 0));
+        }
+
+        unsafe {
+            let large_page_size = GetLargePageMinimum();
+            let aligned_size = (size.div_ceil(large_page_size) + 1) * large_page_size;
+            //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
+            let alignment = HUGE_PAGE_SIZE_BYTES;
+
+            let mut requirements = MEM_ADDRESS_REQUIREMENTS {
+                LowestStartingAddress: zeroed(),
+                HighestEndingAddress: zeroed(),
+                Alignment: alignment,
+            };
+
+            let extended_parameter_1 = MEM_EXTENDED_PARAMETER {
+                Anonymous1: MEM_EXTENDED_PARAMETER_0 {
+                    _bitfield: MemExtendedParameterAddressRequirements.0 as u64,
+                },
+                Anonymous2: MEM_EXTENDED_PARAMETER_1 {
+                    Pointer: &mut requirements as *mut MEM_ADDRESS_REQUIREMENTS
+                        as *mut std::os::raw::c_void,
+                },
+            };
+
+            let extended_parameter_2 = MEM_EXTENDED_PARAMETER {
+                Anonymous1: MEM_EXTENDED_PARAMETER_0 {
+                    _bitfield: MemExtendedParameterAttributeFlags.0 as u64, // Specify MEM_LARGE_PAGES
+                },
+                Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+            };
+
+            //let allocation_size = aligned_size;
+            let allocation_size =
+                aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+            //eprintln!("Allocating {allocation_size} bytes");
+
+            let ptr = VirtualAlloc2(
+                None,
+                None,
+                allocation_size,
+                MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                PAGE_READWRITE.0,
+                Some(&mut [extended_parameter_1, extended_parameter_2]),
+            );
+
+            if ptr.is_null() {
+                let error = windows::core::Error::from_thread();
+                eprintln!("HugePageAlloc failed: {error}");
+                return Err(AllocError);
+            }
+
+            let slice = std::slice::from_raw_parts_mut(ptr as *mut u8, aligned_size);
+
+            Ok(ptr::NonNull::new(slice).unwrap())
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: std::ptr::NonNull<u8>, _layout: Layout) {
+        //eprintln!("Deallocating {:} bytes", _layout.size());
+        let result = unsafe { VirtualFree(ptr.as_ptr() as *mut _, 0, MEM_RELEASE) };
+        match result {
+            Ok(()) => {}
+            Err(error) => {
+                panic!("{error}");
+            }
+        }
+    }
+}
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
 #[derive(Clone, Copy)]
-pub(crate) struct Limb(pub(crate) u8x64);
+pub(crate) struct Limb(pub(crate) LimbVec);
 
 impl const std::cmp::PartialEq for Limb {
     fn eq(&self, other: &Self) -> bool {
-        const fn eq_const(lhs: u8x64, rhs: u8x64) -> bool {
-            use std::mem::transmute;
+        const fn eq_const(lhs: LimbVec, rhs: LimbVec) -> bool {
             let arr1 = lhs.to_array();
             let arr2 = rhs.to_array();
-            let arr1_64b: [u64; 8] = unsafe { transmute(arr1) };
-            let arr2_64b: [u64; 8] = unsafe { transmute(arr2) };
-            let mut i: usize = 8;
+            let arr1_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr1) };
+            let arr2_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr2) };
+            let mut i: usize = WV_LEN;
             while i > 0 {
                 if arr1_64b[i] == arr2_64b[i] {
                     i -= 1;
@@ -31,7 +229,7 @@ impl const std::cmp::PartialEq for Limb {
             false
         }
 
-        fn eq_rt(lhs: u8x64, rhs: u8x64) -> bool {
+        fn eq_rt(lhs: LimbVec, rhs: LimbVec) -> bool {
             lhs == rhs
         }
 
@@ -41,6 +239,7 @@ impl const std::cmp::PartialEq for Limb {
 
 impl std::cmp::Eq for Limb {}
 
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
 impl From<Limb> for __m512i {
     #[inline]
     fn from(val: Limb) -> Self {
@@ -48,13 +247,14 @@ impl From<Limb> for __m512i {
     }
 }
 
-impl const From<Limb> for u8x64 {
+impl const From<Limb> for LimbVec {
     #[inline]
     fn from(val: Limb) -> Self {
         val.0
     }
 }
 
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
@@ -62,9 +262,9 @@ impl From<__m512i> for Limb {
     }
 }
 
-impl const From<u8x64> for Limb {
+impl const From<LimbVec> for Limb {
     #[inline]
-    fn from(val: u8x64) -> Self {
+    fn from(val: LimbVec) -> Self {
         Self(val)
     }
 }
@@ -72,46 +272,57 @@ impl const From<u8x64> for Limb {
 impl Limb {
     #[inline]
     pub(crate) const fn new() -> Self {
-        Self(u8x64::splat(0))
+        Self(LimbVec::splat(0))
+    }
+
+    pub(crate) fn new_from_value(value: u128) -> Self {
+        let input_digits = value.to_string();
+        let mut digits = LimbVec::splat(0);
+        for (i, c) in input_digits.chars().rev().enumerate() {
+            if let Some(digit) = c.to_digit(10) {
+                digits[i] = digit as LimbVecScalar;
+            } else {
+                panic!("Invalid digit in input value: {c}");
+            }
+        }
+        Self(digits)
     }
 
     #[inline]
     fn has_carries(&self) -> bool {
-        let self_vector: __m512i = (*self).into();
-        let compare: __m512i = __m512i::from(u8x64::splat(10));
-        let carries = unsafe { _mm512_cmpge_epu8_mask(self_vector, compare) };
-        carries != 0
+        for byte in self.0.as_array() {
+            if *byte >= 10 {
+                return true;
+            }
+        }
+        false
     }
 
     #[inline]
     fn reverse(self) -> Self {
-        let self_u8x64: u8x64 = self.0;
-        Limb(self_u8x64.reverse())
+        Limb(self.0.reverse())
     }
 
     #[inline]
     fn len(&self) -> usize {
-        let zero: __m512i = __m512i::from(u8x64::splat(0));
-        let digit_mask = unsafe { _mm512_cmpeq_epu8_mask(self.0.into(), zero) };
-        64 - digit_mask.leading_ones() as usize
+        let zeros = LimbVec::splat(0);
+        let eq_mask = self.0.simd_ne(zeros);
+        let bitmask = eq_mask.to_bitmask();
+        (LV_LEN - (bitmask.leading_zeros() as usize  - (64 - LV_LEN)))
     }
 
     fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
 
-        let self_vector: __m512i = self.into();
-        let other_vector: __m512i = other.into();
+        debug_assert_eq!(LimbVec::splat(0), self.0 & LimbVec::splat(0xF0));
+        debug_assert_eq!(LimbVec::splat(0), other.0 & LimbVec::splat(0xF0));
 
-        debug_assert_eq!(u8x64::splat(0), unsafe {
-            _mm512_and_epi64(self_vector, u8x64::splat(0xF0).into()).into()
-        });
-        debug_assert_eq!(u8x64::splat(0), unsafe {
-            _mm512_and_epi64(other_vector, u8x64::splat(0xF0).into()).into()
-        });
-
-        let other_shifted = unsafe { _mm512_slli_epi64(other_vector, 4) };
-        unsafe { _mm512_or_si512(self_vector, other_shifted) }.into()
+        unsafe {
+            let other_u64: WideVec = transmute(other.0);
+            let other_shifted: LimbVec = transmute(other_u64 << 4);
+            Limb(self.0 ^ other_shifted)
+        }
     }
 
     #[inline]
@@ -119,12 +330,12 @@ impl Limb {
         (Limb((self.0 << 4) >> 4), Limb(self.0 >> 4))
     }
 
-    const fn into_bytes(self) -> [u8; 64] {
+    const fn into_bytes(self) -> [LimbVecScalar; LV_LEN] {
         self.0.to_array()
     }
 
-    const fn from_bytes(input: [u8; 64]) -> Self {
-        Self(u8x64::from_array(input))
+    const fn from_bytes(input: [LimbVecScalar; LV_LEN]) -> Self {
+        Self(LimbVec::from_array(input))
     }
 
     #[inline]
@@ -133,27 +344,28 @@ impl Limb {
     }
 
     fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.as_array();
         for i in digits.iter().rev() {
             write!(f, "{i}")?;
         }
         Ok(())
     }
 
-    /// A "Simple Example" for "byte-granularity bit rotate"
-    /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn ror4_galois(input: u8x64) -> u8x64 {
-        let input_vec: __m512i = input.into();
-        unsafe {
-            let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
-            _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
-        }
-    }
+    // /// A "Simple Example" for "byte-granularity bit rotate"
+    // /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
+    // #[allow(dead_code)]
+    // #[inline]
+    // pub(crate) fn ror4_galois(input: LimbVec) -> LimbVec {
+    //     // TODO: make portable..?
+    //     let input_vec: __m512i = input.into();
+    //     unsafe {
+    //         let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
+    //         _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
+    //     }
+    // }
 }
 
-impl Default for Limb {
+impl const std::default::Default for Limb {
     fn default() -> Self {
         Self::new()
     }
@@ -163,17 +375,20 @@ impl std::ops::Add for Limb {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        //unsafe { _mm512_add_epi8(self.into(), other.into()) }.into()
-        //Limb(self.0 + other.0) // should compile to be the same
-        unsafe { _mm512_add_epi64(self.into(), other.into()) }.into() // use larger object size because each number will never overflow its byte boundary
+        unsafe {
+            let input_64: WideVec = transmute(self.0);
+            let other_64: WideVec = transmute(other.0);
+            let output_64: WideVec = input_64 + other_64;
+            Limb(transmute::<WideVec, LimbVec>(output_64))
+        }
     }
 }
 
 impl std::fmt::Display for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.to_array();
         for i in digits.iter().rev() {
-            if i > &9u8 {
+            if *i > 9 as LimbVecScalar {
                 write!(f, "\x1b[31m{i}\x1b[0m")?;
             } else {
                 write!(f, "{i}")?;
@@ -185,7 +400,7 @@ impl std::fmt::Display for Limb {
 
 impl std::fmt::Debug for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits: [u8; 64] = self.0.into();
+        let digits = self.0.to_array();
         write!(f, "[")?;
         for i in &digits {
             write!(f, "{i}")?;
@@ -195,8 +410,7 @@ impl std::fmt::Debug for Limb {
 }
 
 #[derive(Clone)]
-//#[repr(align(64))]
-pub struct Integer(pub(crate) Vec<Limb>);
+pub struct Integer<T: Allocator + Clone + Copy>(pub(crate) Vec<Limb, T>);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Checkpoint {
@@ -216,7 +430,7 @@ impl Checkpoint {
 }
 
 #[allow(dead_code)]
-impl Integer {
+impl<T: Allocator + Clone + Copy> Integer<T> {
     // #[inline]
     // pub fn iter(&self) -> std::slice::Iter<'_, Limb> {
     //     self.0.iter()
@@ -233,7 +447,7 @@ impl Integer {
     // }
 
     #[inline]
-    pub(crate) fn reverse_into_integer(&self, output: &mut Self) {
+    pub(crate) fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse an empty integer");
@@ -244,7 +458,7 @@ impl Integer {
             }
         }
 
-        let output_vec: &mut Vec<Limb> = &mut output.0;
+        let output_vec: &mut Vec<Limb, GlobalAllocator> = &mut output.0;
         output_vec.clear();
 
         for limb in self.0.iter().rev() {
@@ -254,23 +468,23 @@ impl Integer {
         // however, the digits are misaligned
 
         // safe because of the check at the top
-        let skip_len: usize = 64 - unsafe { self.0.last().unwrap_unchecked() }.len();
+        let skip_len: usize = LV_LEN - unsafe { self.0.last().unwrap_unchecked() }.len();
 
         output_vec.push(Limb::new());
 
         let vec_beginning_ptr = output_vec.as_mut_ptr().cast::<u8>();
-        let output_len_bytes = output_vec.len() * 64;
+        let output_len_bytes = output_vec.len() * LV_LEN;
 
         let output_slice =
             unsafe { std::slice::from_raw_parts_mut(vec_beginning_ptr, output_len_bytes) };
 
         debug_assert_eq!(
-            output_slice[(output_slice.len() - 64)..output_slice.len()],
-            [0; 64]
+            output_slice[(output_slice.len() - LV_LEN)..output_slice.len()],
+            [0; LV_LEN]
         );
 
-        let right_bound = output_slice.len() - (64 - skip_len);
-        if !(right_bound - skip_len).is_multiple_of(64) {
+        let right_bound = output_slice.len() - (LV_LEN - skip_len);
+        if !(right_bound - skip_len).is_multiple_of(LV_LEN) {
             #[cfg(debug_assertions)]
             unreachable!("Reversal memory copy is not a multiple of 64 bytes");
 
@@ -285,7 +499,7 @@ impl Integer {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    fn reverse_interleave_x2(lhs: &mut u8x64, rhs: &mut u8x64) {
+    fn reverse_interleave_x2(lhs: &mut LimbVec, rhs: &mut LimbVec) {
         // logically these are just bitwise ANDs; however, since the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
         // latency and (somehow) doesn't use an FPU pipe
@@ -298,6 +512,8 @@ impl Integer {
     }
 
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
+        use std::ptr::read_unaligned;
+        // TODO: make portable...?
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
@@ -314,10 +530,10 @@ impl Integer {
 
         self.0.push(Limb::new()); // padding
 
-        let skip_len = 64 - self.0[total_limbs - 1].len();
+        let skip_len = LV_LEN - self.0[total_limbs - 1].len();
 
-        let limbs_ptr = self.0.as_mut_ptr() as *mut u8x64;
-        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut u8x64;
+        let limbs_ptr = self.0.as_mut_ptr() as *mut LimbVec;
+        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut LimbVec;
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
@@ -346,26 +562,39 @@ impl Integer {
             .take_while(|(idx, _)| idx < &total_limbs)
         {
             unsafe {
-                let limb_ptr = &limb.0 as *const u8x64;
+                let limb_ptr = &limb.0 as *const LimbVec;
 
-                let reversed_limb: u8x64 =
-                    u8x64::from(_mm512_loadu_epi64(limb_ptr.byte_add(skip_len) as *const i64)) >> 4;
+                let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
+
                 limb.0 = (limb.0 << 4) >> 4;
 
-                *limb = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+                *limb = Limb(transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(limb.0) + transmute::<LimbVec, WideVec>(reversed_limb)));
 
-                *limb = _mm512_mask_add_epi8(
+                // target-cpu = x86-64-v2:  287.6 sec
+                // target-cpu = x86-64-v3:  266.1 sec
+                // target-cpu = x86-64-v4:  15.1 sec
+                // target-cpu = znver5:     14.5 sec
+                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+                {*limb = _mm512_mask_add_epi64(
                     limb.0.into(),
-                    overflowed as u64,
+                    overflowed as u8,
                     limb.0.into(),
                     _mm512_set1_epi64(1),
                 )
-                .into();
+                .into();}
+
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
+                if overflowed {
+                    limb.0.as_mut_array()[0] += 1;
+                }
+
                 overflowed = false;
 
+                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 loop {
-                    let carry_mask: __mmask64 =
-                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                     let carry_mask: __mmask64 =
+                         _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
                     } else if carry_mask == 0 {
@@ -390,15 +619,34 @@ impl Integer {
                     )
                     .into();
                 }
+            
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
+                loop {
+                    let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
+                    if carry_mask.test(LV_LEN - 1) {
+                        overflowed = true;
+                    } else if !carry_mask.any() {
+                        cold_path();
+                        break
+                    }
+
+                    ever_carried = true;
+
+                    for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
+                        if carry_mask.test(idx) {
+                            *byte -= 10;
+                        }
+
+                        if carry_mask.shift_elements_right::<1usize>(false).test(idx) {
+                            *byte += 1;
+                        }
+                    }
+                }
             }
         }
 
         if overflowed {
-            *unsafe { self.0.last_mut().unwrap_unchecked() } = Limb({
-                let mut arr = [0u8; 64];
-                arr[0] = 1;
-                u8x64::from_array(arr)
-            });
+            unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
         } else {
             self.0.pop();
         }
@@ -512,10 +760,10 @@ impl Integer {
             }
         }
 
-        unsafe { ((self.0.len() - 1) * 64) + self.0.last().unwrap_unchecked().len() }
+        unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
     }
 
-    pub(crate) fn pack(self) -> Self {
+    pub(crate) fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried pack an empty integer");
@@ -544,11 +792,11 @@ impl Integer {
             }
         }
 
-        Self(output_vec)
+        Integer::<GlobalAllocator>(output_vec)
     }
 
     #[must_use]
-    pub fn unpack(self) -> Self {
+    pub fn unpack(self, allocator: T) -> Integer<T> {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to unpack an empty integer");
@@ -559,7 +807,7 @@ impl Integer {
             }
         }
 
-        let mut output: Vec<Limb> = Vec::with_capacity(self.0.len() * 2);
+        let mut output = Vec::with_capacity_in(self.0.len() * 2, allocator);
 
         for limb in &self.0 {
             let (low, high) = limb.unpack();
@@ -571,12 +819,12 @@ impl Integer {
             }
         }
 
-        Integer(output)
+        Integer::<T>(output)
     }
 
     #[inline]
     pub(crate) fn into_bytes(self) -> Vec<u8> {
-        let mut output: Vec<u8> = Vec::with_capacity(self.0.len() * 64);
+        let mut output: Vec<LimbVecScalar> = Vec::with_capacity(self.0.len() * LV_LEN);
         for limb in &self.0 {
             output.extend_from_slice(&limb.into_bytes());
         }
@@ -585,12 +833,12 @@ impl Integer {
 
     #[must_use]
     #[inline]
-    pub fn from_bytes(input: Vec<[u8; 64]>) -> Self {
-        let mut output = Vec::with_capacity(input.len());
+    pub fn from_bytes(input: Vec<[LimbVecScalar; LV_LEN]>, allocator: T) -> Integer<T> {
+        let mut output = Vec::with_capacity_in(input.len(), allocator);
         for limb in &input {
             output.push(Limb::from_bytes(*limb));
         }
-        Self(output)
+        Integer(output)
     }
 
     #[inline]
@@ -602,17 +850,17 @@ impl Integer {
     }
 
     #[inline]
-    pub(crate) fn from_checkpoint(input: Checkpoint) -> (Self, usize) {
-        (
-            Self::from_bytes(Self::chop(input.integer).unwrap()).unpack(),
-            input.iteration,
-        )
+    pub(crate) fn from_checkpoint(input: Checkpoint, allocator: T) -> (Integer<T>, usize) {
+        let chopped_data = Integer::<T>::chop(input.integer).unwrap();
+        let packed_integer = Integer::from_bytes(chopped_data, allocator);
+        let integer = packed_integer.unpack(allocator);
+        (integer, input.iteration)
     }
 
     #[must_use]
     #[inline]
-    pub fn chop(data: Vec<u8>) -> Option<Vec<[u8; 64]>> {
-        data.chunks(64).map(|chunk| chunk.try_into().ok()).collect()
+    pub fn chop(data: Vec<u8>) -> Option<Vec<[LimbVecScalar; LV_LEN]>> {
+        data.chunks(LV_LEN).map(|chunk| chunk.try_into().ok()).collect()
     }
 
     pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -635,7 +883,7 @@ impl Integer {
     }
 }
 
-impl std::fmt::Debug for Integer {
+impl<T: Allocator + Clone + Copy> std::fmt::Debug for Integer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Integer(")?;
         for (i, limb) in self.0.iter().enumerate() {
@@ -645,7 +893,7 @@ impl std::fmt::Debug for Integer {
     }
 }
 
-impl std::fmt::Display for Integer {
+impl<T: Allocator + Clone + Copy> std::fmt::Display for Integer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut output_string = String::new();
         for limb in self.0.iter().rev() {
@@ -655,7 +903,7 @@ impl std::fmt::Display for Integer {
     }
 }
 
-impl std::cmp::PartialEq for Integer {
+impl<T: Allocator + Clone + Copy> std::cmp::PartialEq for Integer<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
@@ -692,14 +940,14 @@ impl std::cmp::PartialEq for Integer {
     }
 }
 
-impl std::cmp::Eq for Integer {}
+impl<T: Allocator + Clone + Copy> std::cmp::Eq for Integer<T> {}
 
 /// A base-10 integer. The limbs grow left-to-right, so the most significant limb is the last one in the vector
 #[macro_export]
 macro_rules! integer {
     ($value:expr) => {{
         let value_str: &str = $value;
-        let mut limbs: Vec<Limb> = Vec::new();
+        let mut limbs: Vec<Limb> = Vec::with_capacity(value_str.len() / $crate::integer_limb::LV_LEN + 1);
         let mut current_limb_digits: Vec<u8> = Vec::new();
 
         for digit in value_str.chars().rev() {
@@ -708,22 +956,22 @@ macro_rules! integer {
             }
             current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
 
-            if current_limb_digits.len() == 64 {
-                let mut limb_bytes: [u8; 64] = [0; 64];
+            if current_limb_digits.len() == $crate::integer_limb::LV_LEN {
+                let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
                 for (i, &digit) in current_limb_digits.iter().enumerate() {
                     limb_bytes[i] = digit;
                 }
-                limbs.push(Limb(u8x64::from(limb_bytes)));
+                limbs.push(Limb($crate::integer_limb::LimbVec::from(limb_bytes)));
                 current_limb_digits.clear();
             }
         }
 
         if !current_limb_digits.is_empty() {
-            let mut limb_bytes: [u8; 64] = [0; 64];
+            let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
             for (i, &digit) in current_limb_digits.iter().enumerate() {
                 limb_bytes[i] = digit;
             }
-            limbs.push(Limb(u8x64::from(limb_bytes)));
+            limbs.push(Limb($crate::integer_limb::LimbVec::from(limb_bytes)));
         }
 
         Integer(limbs)
