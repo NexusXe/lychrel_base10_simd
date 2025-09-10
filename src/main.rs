@@ -23,7 +23,7 @@ mod integer_limb;
 #[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
 use integer_limb::HugePageAllocator;
 
-use integer_limb::{Checkpoint, Integer, Limb};
+use integer_limb::{Checkpoint, Integer, Limb, LimbVecScalar, LV_LEN, WideVecScalar, WV_LEN};
 use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, unlikely};
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
+use std::any::type_name;
 
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
@@ -129,7 +130,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compile_datetime = compile_time::datetime_str!();
     let rustc_version = compile_time::rustc_version_str!();
 
-    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n");
+    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n
+    Compile options:
+    Overall SIMD Width: {} bits
+    Limb Vector Scalar: {}
+    Limb Vector Width: {} ({} bits total)
+    WideVec Scalar: {}
+    WideVec Width: {} ({} bits total)\n",
+    std::mem::size_of::<integer_limb::Limb>() * 8,
+    type_name::<LimbVecScalar>(),
+    LV_LEN,
+    LV_LEN as u32 * LimbVecScalar::BITS,
+    type_name::<WideVecScalar>(),
+    WV_LEN,
+    WV_LEN as u32 * WideVecScalar::BITS,
+);
 
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);

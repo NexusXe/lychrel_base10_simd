@@ -4,7 +4,7 @@ use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-use std::alloc::{AllocError, Allocator, Layout, Global as GlobalAllocator};
+use std::alloc::{AllocError, Allocator, Global as GlobalAllocator, Layout};
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
@@ -31,23 +31,25 @@ mod values {
 ))] // 256-bit vectors
 mod values {
     pub const LV_LEN: usize = 32;
-    type WideVecScalar = u64;
+    pub type WideVecScalar = u64;
 }
 
-#[cfg(all(
-    not(any(
-        target_feature = "avx512f",
-        target_feature = "avx2",
-        target_feature = "sve",
-        feature = "64-byte-limbs"
-    )),
-    target_feature = "sse",
+#[cfg(any(
+    all(
+        not(any(
+            target_feature = "avx512f",
+            target_feature = "avx2",
+            target_feature = "sve",
+            feature = "64-byte-limbs"
+        )),
+        target_feature = "sse"
+    ),
     target_feature = "neon",
     target_feature = "simd128"
 ))] // 128-bit vectors
 mod values {
     pub const LV_LEN: usize = 16;
-    type WideVecScalar = u64;
+    pub type WideVecScalar = u64;
 }
 
 #[cfg(all(
@@ -63,7 +65,7 @@ mod values {
 ))] // 64-bit vectors, 32-bit pointer
 mod values {
     pub const LV_LEN: usize = 8;
-    type WideVecScalar = u64;
+    pub type WideVecScalar = u64;
 }
 #[cfg(all(
     not(any(
@@ -78,13 +80,13 @@ mod values {
 ))] // 32-bit vectors, 32-bit pointer
 mod values {
     pub const LV_LEN: usize = 4;
-    type WideVecScalar = u32;
+    pub type WideVecScalar = u32;
 }
 
 #[cfg(all(target_pointer_width = "16", not(feature = "64-byte-limbs")))]
 mod values {
     pub const LV_LEN: usize = 2;
-    type WideVecScalar = u16;
+    pub type WideVecScalar = u16;
 }
 
 pub use values::*;
@@ -93,7 +95,7 @@ pub type LimbVecScalar = u8;
 pub type LimbVec = Simd<LimbVecScalar, LV_LEN>;
 type LimbVecMask = Mask<LimbVecScalar, LV_LEN>;
 
-const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
+pub const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
 type WideVec = Simd<WideVecScalar, WV_LEN>;
 
 const fn assert_good_vec_sizes() {
@@ -104,10 +106,10 @@ const _: () = assert_good_vec_sizes();
 
 #[cfg(not(target_family = "wasm"))]
 mod huge_page_alloc {
+    use std::alloc::Global as GlobalAllocator;
+    use std::alloc::{AllocError, Allocator, Layout};
     use std::mem::zeroed;
     use std::ptr;
-    use std::alloc::{AllocError, Allocator, Layout};
-    use std::alloc::Global as GlobalAllocator;
 
     #[cfg(target_os = "windows")]
     use windows::{
@@ -200,9 +202,10 @@ mod huge_page_alloc {
     unsafe impl Allocator for HugePageAllocator {
         #[cfg(target_os = "windows")]
         fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
+            #[cfg(feature = "1g_pages")]
             const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
 
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, feature = "1g_pages"))]
             {
                 let large_page_size = unsafe { GetLargePageMinimum() };
                 assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
@@ -219,7 +222,12 @@ mod huge_page_alloc {
                 let aligned_size = (size.div_ceil(large_page_size) + 1) * large_page_size;
                 //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
                 //let alignment = HUGE_PAGE_SIZE_BYTES;
+
+                #[cfg(not(feature = "1g_pages"))]
                 let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
+
+                #[cfg(feature = "1g_pages")]
+                let alignment = (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
 
                 let mut requirements = MEM_ADDRESS_REQUIREMENTS {
                     LowestStartingAddress: zeroed(),
@@ -239,15 +247,20 @@ mod huge_page_alloc {
 
                 let extended_parameter_2 = MEM_EXTENDED_PARAMETER {
                     Anonymous1: MEM_EXTENDED_PARAMETER_0 {
-                        _bitfield: MemExtendedParameterAttributeFlags.0 as u64, // Specify MEM_LARGE_PAGES
+                        _bitfield: MemExtendedParameterAttributeFlags.0 as u64,
                     },
-                    //Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+                    #[cfg(feature = "1g_pages")]
+                    Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+
+                    #[cfg(not(feature = "1g_pages"))]
                     Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 8u64 },
                 };
 
+                #[cfg(feature = "1g_pages")]
+                let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+
+                #[cfg(not(feature = "1g_pages"))]
                 let allocation_size = aligned_size;
-                //let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
-                //eprintln!("Allocating {allocation_size} bytes");
 
                 let ptr = VirtualAlloc2(
                     None,
@@ -320,11 +333,7 @@ impl const std::cmp::PartialEq for Limb {
 
 impl std::cmp::Eq for Limb {}
 
-#[cfg(all(
-    target_feature = "avx512f",
-    not(feature = "no-avx"),
-    target_pointer_width = "64"
-))]
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"),))]
 impl From<Limb> for __m512i {
     #[inline]
     fn from(val: Limb) -> Self {
@@ -339,11 +348,7 @@ impl const From<Limb> for LimbVec {
     }
 }
 
-#[cfg(all(
-    target_feature = "avx512f",
-    not(feature = "no-avx"),
-    target_pointer_width = "64"
-))]
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"),))]
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
@@ -439,19 +444,6 @@ impl Limb {
         }
         Ok(())
     }
-
-    // /// A "Simple Example" for "byte-granularity bit rotate"
-    // /// As far as I'm concerned, this is a function that uses arcane magic to rotate each byte by 4 bits
-    // #[allow(dead_code)]
-    // #[inline]
-    // pub(crate) fn ror4_galois(input: LimbVec) -> LimbVec {
-    //     // TODO: make portable..?
-    //     let input_vec: __m512i = input.into();
-    //     unsafe {
-    //         let rorb4: __m512i = _mm512_set1_epi64(0x1020408001020408);
-    //         _mm512_gf2p8affine_epi64_epi8(input_vec, rorb4, 0x0).into()
-    //     }
-    // }
 }
 
 impl const std::default::Default for Limb {
@@ -666,11 +658,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
                 // target-cpu = znver5:     14.5 sec
-                #[cfg(all(
-                    target_feature = "avx512f",
-                    not(feature = "no-avx"),
-                    target_pointer_width = "64"
-                ))]
+                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx"),))]
                 {
                     *limb = _mm512_mask_add_epi64(
                         limb.0.into(),
@@ -681,22 +669,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
                 }
 
-                #[cfg(any(
-                    not(target_feature = "avx512f"),
-                    feature = "no-avx",
-                    not(target_pointer_width = "64")
-                ))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
                 if overflowed {
                     limb.0.as_mut_array()[0] += 1;
                 }
 
                 overflowed = false;
 
-                #[cfg(all(
-                    target_feature = "avx512bw",
-                    not(feature = "no-avx"),
-                    target_pointer_width = "64"
-                ))]
+                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx"),))]
                 loop {
                     let carry_mask: __mmask64 =
                         _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
@@ -726,11 +706,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
                 }
 
-                #[cfg(any(
-                    not(target_feature = "avx512f"),
-                    feature = "no-avx",
-                    not(target_pointer_width = "64")
-                ))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
                 loop {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
                     if carry_mask.test(LV_LEN - 1) {

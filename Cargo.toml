@@ -10,6 +10,7 @@ default-run = "lychrel_base10_simd"
 no-verify = []
 no-avx = []
 64-byte-limbs = []
+1g_pages = []
 
 [dependencies]
 compile-time = "0.2"

@@ -32,6 +32,7 @@ fn test_iterate() {
     assert_eq!(result.end_integer, integer!("881188"));
 }
 
+#[cfg(target_pointer_width = "64")]
 #[test]
 fn test_iterate_huge() {
     let starting_limb = Limb::new_from_value(196);
