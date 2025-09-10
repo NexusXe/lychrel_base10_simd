@@ -20,7 +20,7 @@
 #![deny(clippy::all)]
 
 mod integer_limb;
-#[cfg(target_pointer_width = "64")]
+#[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
 use integer_limb::HugePageAllocator;
 
 use integer_limb::{Checkpoint, Integer, Limb};
@@ -134,10 +134,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
 
-    #[cfg(target_pointer_width = "64")]
+    #[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
     let allocator = HugePageAllocator::init()?;
 
-    #[cfg(not(target_pointer_width = "64"))]
+    #[cfg(any(not(target_pointer_width = "64"), target_family = "wasm"))]
     let allocator = Global;
 
     let initial_limb = Limb::new_from_value(INITIAL_SEED);
@@ -150,7 +150,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
-    if !args.contains(&"--no-checkpoint".to_string()) && !args.contains(&"--bench".to_string()) && !args.contains(&"--bench".to_string()) && !args.contains(&"--long-bench".to_string()) && !args.contains(&"--short".to_string()){
+    if !args.contains(&"--no-checkpoint".to_string())
+        && !args.contains(&"--bench".to_string())
+        && !args.contains(&"--bench".to_string())
+        && !args.contains(&"--long-bench".to_string())
+        && !args.contains(&"--short".to_string())
+    {
         let checkpoint_path = Path::new(CHECKPOINT_DIR);
 
         match std::fs::read_dir(checkpoint_path) {
@@ -335,7 +340,35 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 cold_path();
                                 println!("FAILED");
                                 eprintln!("Checkpoint validation failed at checkpoint {i:}");
-                                //debug_assert_eq!(read_checkpoint, checkpoint);
+                                let read_checkpoint_len = read_checkpoint.data().1.len();
+                                let read_checkpoint_vector_size: u8 =
+                                    if read_checkpoint_len.is_multiple_of(64) {
+                                        64
+                                    } else if read_checkpoint_len.is_multiple_of(32) {
+                                        32
+                                    } else if read_checkpoint_len.is_multiple_of(16) {
+                                        16
+                                    } else if read_checkpoint_len.is_multiple_of(8) {
+                                        8
+                                    } else if read_checkpoint_len.is_multiple_of(4) {
+                                        4
+                                    } else if read_checkpoint_len.is_multiple_of(2) {
+                                        2
+                                    } else {
+                                        1
+                                    };
+
+                                if !checkpoint
+                                    .data()
+                                    .1
+                                    .len()
+                                    .is_multiple_of(read_checkpoint_vector_size as usize)
+                                {
+                                    cold_path();
+                                    eprintln!(
+                                        "It is possible that the current machine uses a different word size than the machine that generated this checkpoint."
+                                    )
+                                }
                                 std::process::exit(1)
                             }
                         }

@@ -1,52 +1,87 @@
 #![allow(unused)]
-use std::alloc::{AllocError, Allocator, Layout};
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-#[cfg(not(target_arch = "x86_64"))]
-use std::arch::x86::*;
 
+use std::alloc::{AllocError, Allocator, Layout, Global as GlobalAllocator};
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::mem::transmute;
-use std::mem::zeroed;
 
-use std::alloc::Global as GlobalAllocator;
-use std::ptr;
 use std::simd::prelude::*;
 
-#[cfg(target_feature = "avx512f")]
+#[cfg(any(
+    target_feature = "avx512f",
+    target_feature = "sve",
+    feature = "64-byte-limbs"
+))] // 512-bit vectors
 mod values {
     pub const LV_LEN: usize = 64;
     pub type WideVecScalar = u64;
 }
 
-#[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2") )]
+#[cfg(all(
+    not(any(target_feature = "avx512f", target_feature = "sve")),
+    target_feature = "avx2",
+    not(feature = "64-byte-limbs")
+))] // 256-bit vectors
 mod values {
     pub const LV_LEN: usize = 32;
     type WideVecScalar = u64;
 }
 
-#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2")), target_feature = "sse"))]
+#[cfg(all(
+    not(any(
+        target_feature = "avx512f",
+        target_feature = "avx2",
+        target_feature = "sve",
+        feature = "64-byte-limbs"
+    )),
+    target_feature = "sse",
+    target_feature = "neon",
+    target_feature = "simd128"
+))] // 128-bit vectors
 mod values {
     pub const LV_LEN: usize = 16;
     type WideVecScalar = u64;
 }
 
-#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2", target_feature = "sse")), target_feature = "fxsr"))]
-mod values{
+#[cfg(all(
+    not(any(
+        target_feature = "avx512f",
+        target_feature = "avx2",
+        target_feature = "sve",
+        feature = "64-byte-limbs",
+        target_feature = "sse"
+    )),
+    target_feature = "fxsr",
+    target_pointer_width = "32"
+))] // 64-bit vectors, 32-bit pointer
+mod values {
     pub const LV_LEN: usize = 8;
     type WideVecScalar = u64;
 }
-#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2", target_feature = "sse", target_feature = "fxsr")), target_pointer_width = "32"))]
+#[cfg(all(
+    not(any(
+        target_feature = "avx512f",
+        target_feature = "avx2",
+        target_feature = "sve",
+        feature = "64-byte-limbs",
+        target_feature = "sse",
+        target_feature = "fxsr"
+    )),
+    target_pointer_width = "32"
+))] // 32-bit vectors, 32-bit pointer
 mod values {
     pub const LV_LEN: usize = 4;
     type WideVecScalar = u32;
 }
 
-#[cfg(target_pointer_width = "16")]
+#[cfg(all(target_pointer_width = "16", not(feature = "64-byte-limbs")))]
 mod values {
     pub const LV_LEN: usize = 2;
     type WideVecScalar = u16;
@@ -61,185 +96,195 @@ type LimbVecMask = Mask<LimbVecScalar, LV_LEN>;
 const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
 type WideVec = Simd<WideVecScalar, WV_LEN>;
 
-
 const fn assert_good_vec_sizes() {
     assert!(std::mem::size_of::<LimbVec>() == std::mem::size_of::<WideVec>());
 }
 
 const _: () = assert_good_vec_sizes();
 
-#[cfg(target_os = "windows")]
-use windows::{
-    Win32::{
-        Foundation::{CloseHandle, GetLastError, HANDLE, LUID},
-        Security::{
-            AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
-            SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
-        },
-        System::{
-            Memory::{
-                GetLargePageMinimum, MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER,
-                MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1, MEM_LARGE_PAGES, MEM_RELEASE,
-                MEM_RESERVE, MemExtendedParameterAddressRequirements,
-                MemExtendedParameterAttributeFlags, PAGE_READWRITE, VirtualAlloc, VirtualAlloc2,
-                VirtualFree,
+#[cfg(not(target_family = "wasm"))]
+mod huge_page_alloc {
+    use std::mem::zeroed;
+    use std::ptr;
+    use std::alloc::{AllocError, Allocator, Layout};
+    use std::alloc::Global as GlobalAllocator;
+
+    #[cfg(target_os = "windows")]
+    use windows::{
+        Win32::{
+            Foundation::{CloseHandle, GetLastError, HANDLE, LUID},
+            Security::{
+                AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+                SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
             },
-            Threading::{GetCurrentProcess, OpenProcessToken},
+            System::{
+                Memory::{
+                    GetLargePageMinimum, MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT,
+                    MEM_EXTENDED_PARAMETER, MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1,
+                    MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE,
+                    MemExtendedParameterAddressRequirements, MemExtendedParameterAttributeFlags,
+                    PAGE_READWRITE, VirtualAlloc, VirtualAlloc2, VirtualFree,
+                },
+                Threading::{GetCurrentProcess, OpenProcessToken},
+            },
         },
-    },
-    core::{Result as WinResult, w},
-};
+        core::{Result as WinResult, w},
+    };
 
-#[derive(Clone, Copy)]
-pub(crate) struct HugePageAllocator;
+    #[derive(Clone, Copy)]
+    pub struct HugePageAllocator;
 
-impl HugePageAllocator {
-    #[cfg(target_os = "windows")]
-    fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
-        unsafe {
-            let mut token_handle: HANDLE = zeroed();
+    impl HugePageAllocator {
+        #[cfg(target_os = "windows")]
+        fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
+            unsafe {
+                let mut token_handle: HANDLE = zeroed();
 
-            OpenProcessToken(
-                process_handle,
-                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
-                &mut token_handle,
-            )?;
+                OpenProcessToken(
+                    process_handle,
+                    TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                    &mut token_handle,
+                )?;
 
-            let mut luid: LUID = zeroed();
+                let mut luid: LUID = zeroed();
 
-            LookupPrivilegeValueW(None, w!("SeLockMemoryPrivilege"), &mut luid)?;
+                LookupPrivilegeValueW(None, w!("SeLockMemoryPrivilege"), &mut luid)?;
 
-            let token_privileges = TOKEN_PRIVILEGES {
-                PrivilegeCount: 1,
-                Privileges: [LUID_AND_ATTRIBUTES {
-                    Luid: luid,
-                    Attributes: SE_PRIVILEGE_ENABLED,
-                }],
-            };
+                let token_privileges = TOKEN_PRIVILEGES {
+                    PrivilegeCount: 1,
+                    Privileges: [LUID_AND_ATTRIBUTES {
+                        Luid: luid,
+                        Attributes: SE_PRIVILEGE_ENABLED,
+                    }],
+                };
 
-            AdjustTokenPrivileges(
-                token_handle,
-                false,
-                Some(&token_privileges),
-                size_of::<TOKEN_PRIVILEGES>() as u32,
-                None,
-                None,
-            )?;
+                AdjustTokenPrivileges(
+                    token_handle,
+                    false,
+                    Some(&token_privileges),
+                    size_of::<TOKEN_PRIVILEGES>() as u32,
+                    None,
+                    None,
+                )?;
 
-            let last_error = GetLastError();
+                let last_error = GetLastError();
 
-            CloseHandle(token_handle)?;
+                CloseHandle(token_handle)?;
 
-            if last_error.is_err() {
-                return Err(last_error.to_hresult().into());
+                if last_error.is_err() {
+                    return Err(last_error.to_hresult().into());
+                }
+
+                Ok(())
             }
+        }
 
-            Ok(())
+        #[cfg(target_family = "windows")]
+        pub(crate) fn init() -> Result<Self, Box<dyn std::error::Error>> {
+            let process_handle = unsafe { GetCurrentProcess() };
+            Self::enable_memory_lock_privilege(process_handle)?;
+            Ok(Self)
+        }
+
+        #[cfg(target_family = "unix")]
+        pub(crate) fn init() -> Result<Self> {
+            todo!()
+        }
+
+        #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
+        pub(crate) fn init() -> Result<Self> {
+            unimplemented!()
         }
     }
 
-    #[cfg(target_family = "windows")]
-    pub(crate) fn init() -> Result<Self, Box<dyn std::error::Error>> {
-        let process_handle = unsafe { GetCurrentProcess() };
-        Self::enable_memory_lock_privilege(process_handle)?;
-        Ok(Self)
-    }
+    unsafe impl Allocator for HugePageAllocator {
+        #[cfg(target_os = "windows")]
+        fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
+            const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
 
-    #[cfg(target_family = "unix")]
-    pub(crate) fn init() -> Result<Self> {
-        todo!()
-    }
+            #[cfg(debug_assertions)]
+            {
+                let large_page_size = unsafe { GetLargePageMinimum() };
+                assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
+            }
 
-    #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
-    pub(crate) fn init() -> Result<Self> {
-        unimplemented!()
+            let size = layout.size();
+
+            if size == 0 {
+                return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling(), 0));
+            }
+
+            unsafe {
+                let large_page_size = GetLargePageMinimum();
+                let aligned_size = (size.div_ceil(large_page_size) + 1) * large_page_size;
+                //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
+                //let alignment = HUGE_PAGE_SIZE_BYTES;
+                let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
+
+                let mut requirements = MEM_ADDRESS_REQUIREMENTS {
+                    LowestStartingAddress: zeroed(),
+                    HighestEndingAddress: zeroed(),
+                    Alignment: alignment,
+                };
+
+                let extended_parameter_1 = MEM_EXTENDED_PARAMETER {
+                    Anonymous1: MEM_EXTENDED_PARAMETER_0 {
+                        _bitfield: MemExtendedParameterAddressRequirements.0 as u64,
+                    },
+                    Anonymous2: MEM_EXTENDED_PARAMETER_1 {
+                        Pointer: &mut requirements as *mut MEM_ADDRESS_REQUIREMENTS
+                            as *mut std::os::raw::c_void,
+                    },
+                };
+
+                let extended_parameter_2 = MEM_EXTENDED_PARAMETER {
+                    Anonymous1: MEM_EXTENDED_PARAMETER_0 {
+                        _bitfield: MemExtendedParameterAttributeFlags.0 as u64, // Specify MEM_LARGE_PAGES
+                    },
+                    //Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
+                    Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 8u64 },
+                };
+
+                let allocation_size = aligned_size;
+                //let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+                //eprintln!("Allocating {allocation_size} bytes");
+
+                let ptr = VirtualAlloc2(
+                    None,
+                    None,
+                    allocation_size,
+                    MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                    PAGE_READWRITE.0,
+                    Some(&mut [extended_parameter_1, extended_parameter_2]),
+                );
+
+                if ptr.is_null() {
+                    let error = windows::core::Error::from_thread();
+                    eprintln!("HugePageAlloc failed: {error}");
+                    return Err(AllocError);
+                }
+
+                let slice = std::slice::from_raw_parts_mut(ptr as *mut u8, aligned_size);
+
+                Ok(ptr::NonNull::new(slice).unwrap())
+            }
+        }
+
+        unsafe fn deallocate(&self, ptr: std::ptr::NonNull<u8>, _layout: Layout) {
+            //eprintln!("Deallocating {:} bytes", _layout.size());
+            let result = unsafe { VirtualFree(ptr.as_ptr() as *mut _, 0, MEM_RELEASE) };
+            match result {
+                Ok(()) => {}
+                Err(error) => {
+                    panic!("{error}");
+                }
+            }
+        }
     }
 }
 
-unsafe impl Allocator for HugePageAllocator {
-    #[cfg(target_os = "windows")]
-    fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
-        const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
-
-        #[cfg(debug_assertions)]
-        {
-            let large_page_size = unsafe { GetLargePageMinimum() };
-            assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
-        }
-
-        let size = layout.size();
-
-        if size == 0 {
-            return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling(), 0));
-        }
-
-        unsafe {
-            let large_page_size = GetLargePageMinimum();
-            let aligned_size = (size.div_ceil(large_page_size) + 1) * large_page_size;
-            //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
-            //let alignment = HUGE_PAGE_SIZE_BYTES;
-            let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
-
-            let mut requirements = MEM_ADDRESS_REQUIREMENTS {
-                LowestStartingAddress: zeroed(),
-                HighestEndingAddress: zeroed(),
-                Alignment: alignment,
-            };
-
-            let extended_parameter_1 = MEM_EXTENDED_PARAMETER {
-                Anonymous1: MEM_EXTENDED_PARAMETER_0 {
-                    _bitfield: MemExtendedParameterAddressRequirements.0 as u64,
-                },
-                Anonymous2: MEM_EXTENDED_PARAMETER_1 {
-                    Pointer: &mut requirements as *mut MEM_ADDRESS_REQUIREMENTS
-                        as *mut std::os::raw::c_void,
-                },
-            };
-
-            let extended_parameter_2 = MEM_EXTENDED_PARAMETER {
-                Anonymous1: MEM_EXTENDED_PARAMETER_0 {
-                    _bitfield: MemExtendedParameterAttributeFlags.0 as u64, // Specify MEM_LARGE_PAGES
-                },
-                //Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
-                Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 8u64 },
-            };
-
-            let allocation_size = aligned_size;
-            //let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
-            //eprintln!("Allocating {allocation_size} bytes");
-
-            let ptr = VirtualAlloc2(
-                None,
-                None,
-                allocation_size,
-                MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
-                PAGE_READWRITE.0,
-                Some(&mut [extended_parameter_1, extended_parameter_2]),
-            );
-
-            if ptr.is_null() {
-                let error = windows::core::Error::from_thread();
-                eprintln!("HugePageAlloc failed: {error}");
-                return Err(AllocError);
-            }
-
-            let slice = std::slice::from_raw_parts_mut(ptr as *mut u8, aligned_size);
-
-            Ok(ptr::NonNull::new(slice).unwrap())
-        }
-    }
-
-    unsafe fn deallocate(&self, ptr: std::ptr::NonNull<u8>, _layout: Layout) {
-        //eprintln!("Deallocating {:} bytes", _layout.size());
-        let result = unsafe { VirtualFree(ptr.as_ptr() as *mut _, 0, MEM_RELEASE) };
-        match result {
-            Ok(()) => {}
-            Err(error) => {
-                panic!("{error}");
-            }
-        }
-    }
-}
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use huge_page_alloc::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
@@ -275,7 +320,11 @@ impl const std::cmp::PartialEq for Limb {
 
 impl std::cmp::Eq for Limb {}
 
-#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
+#[cfg(all(
+    target_feature = "avx512f",
+    not(feature = "no-avx"),
+    target_pointer_width = "64"
+))]
 impl From<Limb> for __m512i {
     #[inline]
     fn from(val: Limb) -> Self {
@@ -290,7 +339,11 @@ impl const From<Limb> for LimbVec {
     }
 }
 
-#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
+#[cfg(all(
+    target_feature = "avx512f",
+    not(feature = "no-avx"),
+    target_pointer_width = "64"
+))]
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
@@ -604,32 +657,49 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 limb.0 = (limb.0 << 4) >> 4;
 
-                *limb = Limb(transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(limb.0) + transmute::<LimbVec, WideVec>(reversed_limb)));
+                *limb = Limb(transmute::<WideVec, LimbVec>(
+                    transmute::<LimbVec, WideVec>(limb.0)
+                        + transmute::<LimbVec, WideVec>(reversed_limb),
+                ));
 
                 // target-cpu = x86-64-v2:  287.6 sec
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
                 // target-cpu = znver5:     14.5 sec
-                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
-                {*limb = _mm512_mask_add_epi64(
-                    limb.0.into(),
-                    overflowed as u8,
-                    limb.0.into(),
-                    _mm512_set1_epi64(1),
-                )
-                .into();}
+                #[cfg(all(
+                    target_feature = "avx512f",
+                    not(feature = "no-avx"),
+                    target_pointer_width = "64"
+                ))]
+                {
+                    *limb = _mm512_mask_add_epi64(
+                        limb.0.into(),
+                        overflowed as u8,
+                        limb.0.into(),
+                        _mm512_set1_epi64(1),
+                    )
+                    .into();
+                }
 
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx", not(target_pointer_width = "64")))]
+                #[cfg(any(
+                    not(target_feature = "avx512f"),
+                    feature = "no-avx",
+                    not(target_pointer_width = "64")
+                ))]
                 if overflowed {
                     limb.0.as_mut_array()[0] += 1;
                 }
 
                 overflowed = false;
 
-                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx"), target_pointer_width = "64"))]
+                #[cfg(all(
+                    target_feature = "avx512bw",
+                    not(feature = "no-avx"),
+                    target_pointer_width = "64"
+                ))]
                 loop {
-                     let carry_mask: __mmask64 =
-                         _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                    let carry_mask: __mmask64 =
+                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
 
                     if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                         overflowed = true;
@@ -655,15 +725,19 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     )
                     .into();
                 }
-            
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx", not(target_pointer_width = "64")))]
+
+                #[cfg(any(
+                    not(target_feature = "avx512f"),
+                    feature = "no-avx",
+                    not(target_pointer_width = "64")
+                ))]
                 loop {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
                     if carry_mask.test(LV_LEN - 1) {
                         overflowed = true;
                     } else if !carry_mask.any() {
                         cold_path();
-                        break
+                        break;
                     }
 
                     ever_carried = true;
@@ -896,7 +970,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[must_use]
     #[inline]
     pub fn chop(data: Vec<u8>) -> Option<Vec<[LimbVecScalar; LV_LEN]>> {
-        data.chunks(LV_LEN).map(|chunk| chunk.try_into().ok()).collect()
+        data.chunks(LV_LEN)
+            .map(|chunk| chunk.try_into().ok())
+            .collect()
     }
 
     pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -983,7 +1059,8 @@ impl<T: Allocator + Clone + Copy> std::cmp::Eq for Integer<T> {}
 macro_rules! integer {
     ($value:expr) => {{
         let value_str: &str = $value;
-        let mut limbs: Vec<Limb> = Vec::with_capacity(value_str.len() / $crate::integer_limb::LV_LEN + 1);
+        let mut limbs: Vec<Limb> =
+            Vec::with_capacity(value_str.len() / $crate::integer_limb::LV_LEN + 1);
         let mut current_limb_digits: Vec<u8> = Vec::new();
 
         for digit in value_str.chars().rev() {
@@ -993,7 +1070,8 @@ macro_rules! integer {
             current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
 
             if current_limb_digits.len() == $crate::integer_limb::LV_LEN {
-                let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
+                let mut limb_bytes: [$crate::integer_limb::LimbVecScalar;
+                    $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
                 for (i, &digit) in current_limb_digits.iter().enumerate() {
                     limb_bytes[i] = digit;
                 }
@@ -1003,7 +1081,8 @@ macro_rules! integer {
         }
 
         if !current_limb_digits.is_empty() {
-            let mut limb_bytes: [$crate::integer_limb::LimbVecScalar; $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
+            let mut limb_bytes: [$crate::integer_limb::LimbVecScalar;
+                $crate::integer_limb::LV_LEN] = [0; $crate::integer_limb::LV_LEN];
             for (i, &digit) in current_limb_digits.iter().enumerate() {
                 limb_bytes[i] = digit;
             }
