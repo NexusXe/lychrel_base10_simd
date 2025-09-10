@@ -1,10 +1,10 @@
-#![allow(unused)]
+//#![allow(unused)]
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-use std::alloc::{AllocError, Allocator, Global as GlobalAllocator, Layout};
+use std::alloc::{Allocator, Global as GlobalAllocator};
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
@@ -93,7 +93,6 @@ pub use values::*;
 
 pub type LimbVecScalar = u8;
 pub type LimbVec = Simd<LimbVecScalar, LV_LEN>;
-type LimbVecMask = Mask<LimbVecScalar, LV_LEN>;
 
 pub const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
 type WideVec = Simd<WideVecScalar, WV_LEN>;
@@ -106,7 +105,6 @@ const _: () = assert_good_vec_sizes();
 
 #[cfg(not(target_family = "wasm"))]
 mod huge_page_alloc {
-    use std::alloc::Global as GlobalAllocator;
     use std::alloc::{AllocError, Allocator, Layout};
     use std::mem::zeroed;
     use std::ptr;
@@ -125,7 +123,7 @@ mod huge_page_alloc {
                     MEM_EXTENDED_PARAMETER, MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1,
                     MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE,
                     MemExtendedParameterAddressRequirements, MemExtendedParameterAttributeFlags,
-                    PAGE_READWRITE, VirtualAlloc, VirtualAlloc2, VirtualFree,
+                    PAGE_READWRITE, VirtualAlloc2, VirtualFree,
                 },
                 Threading::{GetCurrentProcess, OpenProcessToken},
             },
@@ -133,9 +131,11 @@ mod huge_page_alloc {
         core::{Result as WinResult, w},
     };
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy)]
-    pub struct HugePageAllocator;
+    pub(crate) struct HugePageAllocator;
 
+    #[allow(dead_code)]
     impl HugePageAllocator {
         #[cfg(target_os = "windows")]
         fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
@@ -297,6 +297,7 @@ mod huge_page_alloc {
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[allow(unused_imports)]
 pub(crate) use huge_page_alloc::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
@@ -369,6 +370,7 @@ impl Limb {
         Self(LimbVec::splat(0))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn new_from_value(value: u128) -> Self {
         let input_digits = value.to_string();
         let mut digits = LimbVec::splat(0);
@@ -402,7 +404,7 @@ impl Limb {
         let zeros = LimbVec::splat(0);
         let eq_mask = self.0.simd_ne(zeros);
         let bitmask = eq_mask.to_bitmask();
-        (LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN)))
+        LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN))
     }
 
     fn pack(self, other: Self) -> Self {
