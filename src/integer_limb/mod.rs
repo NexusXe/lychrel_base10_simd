@@ -660,7 +660,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
                 // target-cpu = znver5:     14.5 sec
-                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx"),))]
+                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
                 {
                     *limb = _mm512_mask_add_epi64(
                         limb.0.into(),

@@ -137,7 +137,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Limb Vector Scalar: {}
     Limb Vector Width:  {} ({} bits total)
     Packed Limb Scalar: {}
-    Packed Limb Width:  {} ({} bits total)\n",
+    Packed Limb Width:  {}  ({} bits total){}{}",
     std::mem::size_of::<integer_limb::Limb>() * 8,
     type_name::<LimbVecScalar>(),
     LV_LEN,
@@ -145,6 +145,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     type_name::<WideVecScalar>(),
     WV_LEN,
     WV_LEN as u32 * WideVecScalar::BITS,
+    if cfg!(debug_assertions) {
+        "\nNOTICE: Debug assertions are enabled. Expect this to cause a significant slowdown!"
+    } else {
+        "\n"
+    },
+    if cfg!(feature = "1g-pages") {
+        "\n1 GiB huge pages are enabled.\n"
+    } else {
+        "\n"
+    }
 );
 
     #[cfg(not(debug_assertions))]
