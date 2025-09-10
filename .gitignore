@@ -9,3 +9,5 @@ checkpoint_*.bin
 
 checkpoints
 checkpoints/
+*.exe
+compare/
