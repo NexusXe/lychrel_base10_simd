@@ -202,10 +202,10 @@ mod huge_page_alloc {
     unsafe impl Allocator for HugePageAllocator {
         #[cfg(target_os = "windows")]
         fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
-            #[cfg(feature = "1g_pages")]
+            #[cfg(feature = "1g-pages")]
             const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
 
-            #[cfg(all(debug_assertions, feature = "1g_pages"))]
+            #[cfg(all(debug_assertions, feature = "1g-pages"))]
             {
                 let large_page_size = unsafe { GetLargePageMinimum() };
                 assert!(HUGE_PAGE_SIZE_BYTES.is_multiple_of(large_page_size));
@@ -223,10 +223,10 @@ mod huge_page_alloc {
                 //let alignment = layout.align().div_ceil(large_page_size) * large_page_size;
                 //let alignment = HUGE_PAGE_SIZE_BYTES;
 
-                #[cfg(not(feature = "1g_pages"))]
+                #[cfg(not(feature = "1g-pages"))]
                 let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
 
-                #[cfg(feature = "1g_pages")]
+                #[cfg(feature = "1g-pages")]
                 let alignment = (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
 
                 let mut requirements = MEM_ADDRESS_REQUIREMENTS {
@@ -249,17 +249,17 @@ mod huge_page_alloc {
                     Anonymous1: MEM_EXTENDED_PARAMETER_0 {
                         _bitfield: MemExtendedParameterAttributeFlags.0 as u64,
                     },
-                    #[cfg(feature = "1g_pages")]
+                    #[cfg(feature = "1g-pages")]
                     Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 16u64 },
 
-                    #[cfg(not(feature = "1g_pages"))]
+                    #[cfg(not(feature = "1g-pages"))]
                     Anonymous2: MEM_EXTENDED_PARAMETER_1 { ULong64: 8u64 },
                 };
 
-                #[cfg(feature = "1g_pages")]
+                #[cfg(feature = "1g-pages")]
                 let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
 
-                #[cfg(not(feature = "1g_pages"))]
+                #[cfg(not(feature = "1g-pages"))]
                 let allocation_size = aligned_size;
 
                 let ptr = VirtualAlloc2(
@@ -706,7 +706,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
                 }
 
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
+                #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx",))]
                 loop {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
                     if carry_mask.test(LV_LEN - 1) {
@@ -956,7 +956,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         impl std::fmt::Display for LimbRawDisplay<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                // Delegate the formatting call to `Limb::display_raw`.
+                // delegate the formatting call to `Limb::display_raw`
                 self.0.display_raw(f)
             }
         }
