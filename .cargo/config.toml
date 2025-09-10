@@ -2,9 +2,10 @@
 rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true"]
 
 [unstable]
-build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
-build-std-features = ["panic_immediate_abort"]
+# build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
+# build-std-features = ["panic_immediate_abort"]
 
 [target.x86_64-pc-windows-msvc]
 # rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "fmt-debug=none", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true"]
 rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "fmt-debug=none", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false"]
+ 

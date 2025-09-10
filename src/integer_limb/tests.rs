@@ -35,15 +35,15 @@ fn test_integer_len() {
 
 #[test]
 fn test_pack_unpack_limb() {
-    let limb1: Limb = u8x64::splat(9).into();
-    let limb2: Limb = u8x64::splat(1).into();
+    let limb1: Limb = LimbVec::splat(9).into();
+    let limb2: Limb = LimbVec::splat(1).into();
     let packed = limb1.pack(limb2);
-    assert_eq!(packed, u8x64::splat(0x19).into());
+    assert_eq!(packed, LimbVec::splat(0x19).into());
 
-    let packed: Limb = u8x64::splat(0x19).into();
+    let packed: Limb = LimbVec::splat(0x19).into();
     let (limb1, limb2) = packed.unpack();
-    assert_eq!(limb1, u8x64::splat(9).into());
-    assert_eq!(limb2, u8x64::splat(1).into());
+    assert_eq!(limb1, LimbVec::splat(9).into());
+    assert_eq!(limb2, LimbVec::splat(1).into());
 }
 
 #[test]
@@ -51,23 +51,23 @@ fn test_pack_unpack_limb_random() {
     fn test_with_seed(seed: u64) {
         // get two deterministically random limbs from a SmallRng with a constant seed
         let mut rng = SmallRng::seed_from_u64(seed);
-        let mut arr1: [u8; 64] = [0; 64];
-        let mut arr2: [u8; 64] = [0; 64];
+        let mut arr1: [LimbVecScalar; LV_LEN] = [0; LV_LEN];
+        let mut arr2: [LimbVecScalar; LV_LEN] = [0; LV_LEN];
 
         for (item1, item2) in arr1.iter_mut().zip(arr2.iter_mut()) {
             *item1 = rng.random_range(0..10);
             *item2 = rng.random_range(0..10);
         }
-        let limb1 = Limb(u8x64::from(arr1));
-        let limb2 = Limb(u8x64::from(arr2));
+        let limb1 = Limb(LimbVec::from(arr1));
+        let limb2 = Limb(LimbVec::from(arr2));
 
         let integer = Integer(vec![limb1, limb2]);
         let packed = integer.clone().pack();
         assert_eq!(packed.clone().unpack(GlobalAllocator), integer);
 
-        let bytes: Vec<u8> = packed.clone().into_bytes();
-        let organized_bytes: Vec<[u8; 64]> = bytes
-            .chunks(64)
+        let bytes: Vec<LimbVecScalar> = packed.clone().into_bytes();
+        let organized_bytes: Vec<[LimbVecScalar; LV_LEN]> = bytes
+            .chunks(LV_LEN)
             .map(|chunk| chunk.try_into().unwrap())
             .collect();
 
@@ -82,17 +82,17 @@ fn test_pack_unpack_limb_random() {
 
 #[test]
 fn test_pack_unpack_integer() {
-    let limb1: Limb = u8x64::splat(9).into();
-    let limb2: Limb = u8x64::splat(1).into();
+    let limb1: Limb = LimbVec::splat(9).into();
+    let limb2: Limb = LimbVec::splat(1).into();
     let integer = Integer(vec![limb1, limb2]);
     let packed = integer.pack();
-    assert_eq!(packed, Integer(vec![u8x64::splat(0x19).into()]));
+    assert_eq!(packed, Integer(vec![LimbVec::splat(0x19).into()]));
 
-    let packed = Integer(vec![u8x64::splat(0x19).into()]);
+    let packed = Integer(vec![LimbVec::splat(0x19).into()]);
     let unpacked = packed.unpack(GlobalAllocator);
     assert_eq!(unpacked, Integer(vec![limb1, limb2]));
 
-    let packed = Integer(vec![u8x64::splat(0x19).into(); 4]);
+    let packed = Integer(vec![LimbVec::splat(0x19).into(); 4]);
     let unpacked = packed.unpack(GlobalAllocator);
     assert_eq!(
         unpacked,
@@ -106,9 +106,9 @@ fn test_write_and_read_checkpoint() {
 
     const LEN: usize = 13;
     let mut rng = SmallRng::seed_from_u64(0xABCD_EF01_2345_6789);
-    let mut arrs: Vec<[u8; 64]> = Vec::with_capacity(LEN);
+    let mut arrs: Vec<[LimbVecScalar; LV_LEN]> = Vec::with_capacity(LEN);
     for _ in 0..LEN {
-        let mut arr: [u8; 64] = [0; 64];
+        let mut arr: [LimbVecScalar; LV_LEN] = [0; LV_LEN];
         for item in &mut arr {
             *item = rng.random_range(0..10);
         }
@@ -117,13 +117,13 @@ fn test_write_and_read_checkpoint() {
 
     let last_arr = arrs.last_mut().unwrap();
 
-    for item in last_arr.iter_mut().take(64).skip(32) {
+    for item in last_arr.iter_mut().take(LV_LEN).skip(32) {
         *item = 0;
     }
 
     let mut limbs: Vec<Limb> = Vec::with_capacity(LEN);
     for arr in arrs {
-        limbs.push(Limb(u8x64::from(arr)));
+        limbs.push(Limb(LimbVec::from(arr)));
     }
 
     let integer = Integer(limbs);
@@ -139,10 +139,10 @@ fn test_write_and_read_checkpoint() {
 
     // now read it as if it was from a file
 
-    let mut checkpoint_read: Vec<u8> = Vec::new();
+    let mut checkpoint_read: Vec<LimbVecScalar> = Vec::new();
     checkpoint_read.write_all(&buffer).unwrap();
-    let organized_bytes: Vec<[u8; 64]> = checkpoint_read
-        .chunks(64)
+    let organized_bytes: Vec<[LimbVecScalar; LV_LEN]> = checkpoint_read
+        .chunks(LV_LEN)
         .map(|chunk| chunk.try_into().unwrap())
         .collect();
     let integer_read = Integer::from_bytes(organized_bytes, GlobalAllocator);
@@ -154,21 +154,21 @@ fn test_write_and_read_checkpoint() {
 
 #[test]
 fn test_reverse_interleave_limbs() {
-    let mut a: u8x64 = [1u8; 64].into();
-    let mut b: u8x64 = [2u8; 64].into();
+    let mut a: LimbVec = [1; LV_LEN].into();
+    let mut b: LimbVec = [2; LV_LEN].into();
 
     Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
 
-    assert_eq!(a, [0x21u8; 64].into());
-    assert_eq!(b, [0x12u8; 64].into());
+    assert_eq!(a, [0x21; LV_LEN].into());
+    assert_eq!(b, [0x12; LV_LEN].into());
 
-    let mut a: u8x64 = [9u8; 64].into();
-    let mut b: u8x64 = [0u8; 64].into();
+    let mut a: LimbVec = [9; LV_LEN].into();
+    let mut b: LimbVec = [0u8; LV_LEN].into();
 
     Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
 
-    assert_eq!(a, [0x09u8; 64].into());
-    assert_eq!(b, [0x90u8; 64].into());
+    assert_eq!(a, [0x09; LV_LEN].into());
+    assert_eq!(b, [0x90; LV_LEN].into());
 }
 
 // #[test]
@@ -189,10 +189,10 @@ fn test_fused_reverse_add_asm_simple_interleave() {
 #[test]
 fn test_fused_reverse_add_asm_simple_interleave_2() {
     let mut integer = Integer(vec![Limb({
-        let mut arr = [0u8; 64];
+        let mut arr: [LimbVecScalar; LV_LEN] = [0; LV_LEN];
         arr[0] = 5;
-        arr[63] = 6;
-        u8x64::from(arr)
+        arr[LV_LEN - 1] = 6;
+        LimbVec::from(arr)
     })]);
 
     let ever_carried = integer.fused_reverse_add_asm_interleave();
@@ -220,7 +220,7 @@ fn test_fused_reverse_add_asm_interleave() {
     assert_eq!(integer3, integer!("22222222222222222222222222222222"));
     assert!(!ever_carried);
 
-    let mut integer4 = Integer(vec![Limb(u8x64::splat(9))]);
+    let mut integer4 = Integer(vec![Limb(LimbVec::splat(9))]);
     let ever_carried = integer4.fused_reverse_add_asm_interleave();
     assert_eq!(
         integer4,

@@ -17,15 +17,50 @@ use std::alloc::Global as GlobalAllocator;
 use std::ptr;
 use std::simd::prelude::*;
 
-pub const LV_LEN: usize = 64;
+#[cfg(target_feature = "avx512f")]
+mod values {
+    pub const LV_LEN: usize = 64;
+    pub type WideVecScalar = u64;
+}
 
-pub type LimbVec = Simd<u8, LV_LEN>;
-pub type LimbVecScalar = <std::simd::Simd<u8, LV_LEN> as std::simd::num::SimdUint>::Scalar;
-type LimbVecMask = Mask<u8, LV_LEN>;
+#[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2") )]
+mod values {
+    pub const LV_LEN: usize = 32;
+    type WideVecScalar = u64;
+}
 
-const WV_LEN: usize = LV_LEN / 8;
-type WideVec = Simd<u64, WV_LEN>;
-type WideVecScalar = <std::simd::Simd<u64, WV_LEN> as std::simd::num::SimdUint>::Scalar;
+#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2")), target_feature = "sse"))]
+mod values {
+    pub const LV_LEN: usize = 16;
+    type WideVecScalar = u64;
+}
+
+#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2", target_feature = "sse")), target_feature = "fxsr"))]
+mod values{
+    pub const LV_LEN: usize = 8;
+    type WideVecScalar = u64;
+}
+#[cfg(all(not(any(target_feature = "avx512f", target_feature = "avx2", target_feature = "sse", target_feature = "fxsr")), target_pointer_width = "32"))]
+mod values {
+    pub const LV_LEN: usize = 4;
+    type WideVecScalar = u32;
+}
+
+#[cfg(target_pointer_width = "16")]
+mod values {
+    pub const LV_LEN: usize = 2;
+    type WideVecScalar = u16;
+}
+
+pub use values::*;
+
+pub type LimbVecScalar = u8;
+pub type LimbVec = Simd<LimbVecScalar, LV_LEN>;
+type LimbVecMask = Mask<LimbVecScalar, LV_LEN>;
+
+const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
+type WideVec = Simd<WideVecScalar, WV_LEN>;
+
 
 const fn assert_good_vec_sizes() {
     assert!(std::mem::size_of::<LimbVec>() == std::mem::size_of::<WideVec>());
@@ -240,7 +275,7 @@ impl const std::cmp::PartialEq for Limb {
 
 impl std::cmp::Eq for Limb {}
 
-#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
 impl From<Limb> for __m512i {
     #[inline]
     fn from(val: Limb) -> Self {
@@ -255,7 +290,7 @@ impl const From<Limb> for LimbVec {
     }
 }
 
-#[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+#[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
 impl From<__m512i> for Limb {
     #[inline]
     fn from(val: __m512i) -> Self {
@@ -309,7 +344,7 @@ impl Limb {
         let zeros = LimbVec::splat(0);
         let eq_mask = self.0.simd_ne(zeros);
         let bitmask = eq_mask.to_bitmask();
-        (LV_LEN - (bitmask.leading_zeros() as usize  - (64 - LV_LEN)))
+        (LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN)))
     }
 
     fn pack(self, other: Self) -> Self {
@@ -575,7 +610,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
                 // target-cpu = znver5:     14.5 sec
-                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx"), target_pointer_width = "64"))]
                 {*limb = _mm512_mask_add_epi64(
                     limb.0.into(),
                     overflowed as u8,
@@ -584,14 +619,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 )
                 .into();}
 
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx", not(target_pointer_width = "64")))]
                 if overflowed {
                     limb.0.as_mut_array()[0] += 1;
                 }
 
                 overflowed = false;
 
-                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
+                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx"), target_pointer_width = "64"))]
                 loop {
                      let carry_mask: __mmask64 =
                          _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
@@ -621,7 +656,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
                 }
             
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx"))]
+                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx", not(target_pointer_width = "64")))]
                 loop {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
                     if carry_mask.test(LV_LEN - 1) {

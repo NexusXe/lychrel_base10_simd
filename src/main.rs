@@ -150,7 +150,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
-    if !args.contains(&"--no-checkpoint".to_string()) {
+    if !args.contains(&"--no-checkpoint".to_string()) && !args.contains(&"--bench".to_string()) && !args.contains(&"--bench".to_string()) && !args.contains(&"--long-bench".to_string()) && !args.contains(&"--short".to_string()){
         let checkpoint_path = Path::new(CHECKPOINT_DIR);
 
         match std::fs::read_dir(checkpoint_path) {
@@ -334,8 +334,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 cold_path();
                                 println!("FAILED");
-
                                 eprintln!("Checkpoint validation failed at checkpoint {i:}");
+                                //debug_assert_eq!(read_checkpoint, checkpoint);
                                 std::process::exit(1)
                             }
                         }
