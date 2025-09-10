@@ -33,6 +33,9 @@ use std::thread;
 use std::time::Instant;
 use std::any::type_name;
 
+#[cfg(target_family = "windows")]
+use windows::Win32::System::{Console::{GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO}, Threading::GetCurrentProcess};
+
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
 
@@ -46,8 +49,6 @@ pub struct StatusReport {
     iteration: usize,
     current_value: Option<Integer<Global>>,
 }
-
-const CHECKPOINT_DIR: &str = "./checkpoints";
 
 const LOG_FREQUENCY_EXP: usize = 14;
 const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
@@ -134,9 +135,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Compile options:
     Overall SIMD Width: {} bits
     Limb Vector Scalar: {}
-    Limb Vector Width: {} ({} bits total)
-    WideVec Scalar: {}
-    WideVec Width: {} ({} bits total)\n",
+    Limb Vector Width:  {} ({} bits total)
+    Packed Limb Scalar: {}
+    Packed Limb Width:  {} ({} bits total)\n",
     std::mem::size_of::<integer_limb::Limb>() * 8,
     type_name::<LimbVecScalar>(),
     LV_LEN,
@@ -165,17 +166,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
+
+    let checkpoint_dir = match std::env::var("LYCHREL_CHECKPOINTS_PATH") {
+        Ok(path) => path.trim_end_matches(['/', '\\']).to_string(),
+        Err(_) => DEFAULT_CHECKPOINT_DIR.to_string(),
+    };
+
     if !args.contains(&"--no-checkpoint".to_string())
         && !args.contains(&"--bench".to_string())
         && !args.contains(&"--bench".to_string())
         && !args.contains(&"--long-bench".to_string())
         && !args.contains(&"--short".to_string())
     {
-        let checkpoint_path = Path::new(CHECKPOINT_DIR);
+        let checkpoint_path = Path::new(&checkpoint_dir);
 
         match std::fs::read_dir(checkpoint_path) {
             Ok(entries) => {
-                eprintln!("Using pre-existing checkpoints folder.");
+                eprintln!("Using pre-existing checkpoints folder at {}", checkpoint_path.display());
                 // since the folder exists, get the `Path`s of all files inside of it
                 // filter out those that are irrelevant to our current seed
                 let mut checkpoint_files: Vec<std::path::PathBuf> = entries
@@ -279,7 +287,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         LIMIT
     };
-    println!("----------------------------------------------------------------");
+    let console_width = {
+        #[cfg(target_family = "windows")]
+        {
+            let mut console_info = CONSOLE_SCREEN_BUFFER_INFO::default();
+            let output = unsafe { GetConsoleScreenBufferInfo(GetCurrentProcess(), &mut console_info) };
+            match output {
+                Ok(_) => (console_info.dwSize.X).min(255),
+                Err(_) => {63},
+            }
+        }
+
+        #[cfg(not(target_family = "windows"))]
+        63 // TODO: linux support
+    };
+
+    println!("{}", "-".repeat(console_width as usize));
 
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
@@ -324,7 +347,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "no-verify"))]
             {
                 let checkpoint_path =
-                    Path::new(CHECKPOINT_DIR).join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
+                    Path::new(&checkpoint_dir).join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
 
                 println!(
                     "Reached checkpoint: {}",
