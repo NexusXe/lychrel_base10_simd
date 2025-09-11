@@ -500,7 +500,7 @@ pub struct Integer<T: Allocator + Clone + Copy>(pub Vec<Limb, T>);
 #[derive(Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     iteration: usize,
-    integer: Vec<u8>,
+    pub integer: Vec<u8>,
 }
 
 impl Checkpoint {
@@ -646,7 +646,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v4:  15.1 sec
                 // target-cpu = znver5:     14.5 sexc
                 #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
-                if overflowed {
+                if likely(overflowed) {
                     *limb = _mm512_mask_add_epi64(
                         limb.0.into(),
                         1,

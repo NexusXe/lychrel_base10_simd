@@ -175,16 +175,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => DEFAULT_CHECKPOINT_DIR.to_string(),
     };
 
-    if !args.contains(&"--no-checkpoint".to_string())
+    if args.contains(&"--start-at".to_string()) || (
+        !args.contains(&"--no-checkpoint".to_string())
         && !args.contains(&"--bench".to_string())
         && !args.contains(&"--long-bench".to_string())
-        && !args.contains(&"--short".to_string())
+        && !args.contains(&"--short".to_string()))
     {
         let checkpoint_path = Path::new(&checkpoint_dir);
 
         match std::fs::read_dir(checkpoint_path) {
             Ok(entries) => {
-                eprintln!(
+                println!(
                     "Using pre-existing checkpoints folder at {}",
                     checkpoint_path.display()
                 );
@@ -276,7 +277,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        eprintln!("Not starting from checkpoint.");
+        println!("Not starting from checkpoint.");
     }
 
     let limit: usize = if args.contains(&"--short".to_string()) {
@@ -373,7 +374,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
                     };
-                    let mut buffer = Vec::new();
+                    let mut buffer = Vec::with_capacity(checkpoint.integer.len());
                     match file.read_to_end(&mut buffer) {
                         Ok(_) => {
                             let read_checkpoint = Checkpoint::new(i, buffer);
@@ -431,7 +432,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("Wrote {:} KiB", data_length / 1024);
                         }
                         Err(e) => {
-                            eprintln!("FAILED: {e}");
+                            println!("FAILED: {e}");
                             std::process::exit(1);
                         }
                     }
