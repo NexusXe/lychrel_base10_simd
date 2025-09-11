@@ -510,21 +510,6 @@ impl Checkpoint {
 }
 
 impl<T: Allocator + Clone + Copy> Integer<T> {
-    // #[inline]
-    // pub fn iter(&self) -> std::slice::Iter<'_, Limb> {
-    //     self.0.iter()
-    // }
-
-    // #[inline]
-    // pub fn iter_rev(&self) -> std::iter::Rev<std::slice::Iter<'_, Limb>> {
-    //     self.0.iter().rev()
-    // }
-
-    // #[inline]
-    // pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Limb> {
-    //     self.0.iter_mut()
-    // }
-
     #[inline]
     pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         if self.0.is_empty() {
@@ -593,7 +578,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
-        // TODO: make portable...?
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
@@ -608,7 +592,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let total_limbs = self.0.len();
 
-        self.0.push(Limb::new()); // padding
+        //self.0.push(Limb::new()); // padding
 
         let skip_len = LV_LEN - self.0[total_limbs - 1].len();
 
@@ -730,10 +714,19 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
+        // if overflowed {
+        //     unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
+        // } else {
+        //     self.0.pop();
+        // }
         if overflowed {
-            unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
+            self.0.push({
+                let mut new_limb = Limb::new();
+                new_limb.0.as_mut_array()[0] = 1;
+                new_limb
+            });
         } else {
-            self.0.pop();
+            //self.0.pop();
         }
         ever_carried
     }
@@ -1053,13 +1046,14 @@ macro_rules! integer {
         let value_str: &str = $value;
         let mut limbs: Vec<Limb> =
             Vec::with_capacity(value_str.len() / $crate::integer_limb::LV_LEN + 1);
-        let mut current_limb_digits: Vec<u8> = Vec::new();
+        let mut current_limb_digits: Vec<$crate::integer_limb::LimbVecScalar> = Vec::new();
 
         for digit in value_str.chars().rev() {
             if !digit.is_digit(10) {
                 panic!("Invalid digit: {}", digit);
             }
-            current_limb_digits.push(digit.to_digit(10).unwrap() as u8);
+            current_limb_digits
+                .push(digit.to_digit(10).unwrap() as $crate::integer_limb::LimbVecScalar);
 
             if current_limb_digits.len() == $crate::integer_limb::LV_LEN {
                 let mut limb_bytes: [$crate::integer_limb::LimbVecScalar;
