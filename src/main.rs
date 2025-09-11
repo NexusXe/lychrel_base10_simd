@@ -177,7 +177,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !args.contains(&"--no-checkpoint".to_string())
         && !args.contains(&"--bench".to_string())
-        && !args.contains(&"--bench".to_string())
         && !args.contains(&"--long-bench".to_string())
         && !args.contains(&"--short".to_string())
     {
