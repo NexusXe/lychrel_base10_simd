@@ -722,11 +722,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         //     self.0.pop();
         // }
         if overflowed {
-            self.0.push({
-                let mut new_limb = Limb::new();
-                new_limb.0.as_mut_array()[0] = 1;
-                new_limb
-            });
+            unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
         } else {
             //self.0.pop();
         }
