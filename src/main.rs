@@ -19,22 +19,26 @@
 #![feature(alloc_layout_extra)]
 #![deny(clippy::all)]
 
-mod integer_limb;
 #[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
-use integer_limb::HugePageAllocator;
+use lychrel_base10_simd::integer_limb::HugePageAllocator;
 
-use integer_limb::{Checkpoint, Integer, Limb, LimbVecScalar, LV_LEN, WideVecScalar, WV_LEN};
+use lychrel_base10_simd::integer_limb::{
+    Checkpoint, Integer, LV_LEN, Limb, LimbVecScalar, WV_LEN, WideVecScalar,
+};
 use std::alloc::{Allocator, Global};
+use std::any::type_name;
 use std::hint::{cold_path, likely, unlikely};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
-use std::any::type_name;
 
 #[cfg(target_family = "windows")]
-use windows::Win32::System::{Console::{GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO}, Threading::GetCurrentProcess};
+use windows::Win32::System::{
+    Console::{CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo},
+    Threading::GetCurrentProcess,
+};
 
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
@@ -131,31 +135,32 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compile_datetime = compile_time::datetime_str!();
     let rustc_version = compile_time::rustc_version_str!();
 
-    println!("lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n
+    println!(
+        "lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n
     Compile options:
     Overall SIMD Width: {} bits
     Limb Vector Scalar: {}
     Limb Vector Width:  {} ({} bits total)
     Packed Limb Scalar: {}
     Packed Limb Width:  {}  ({} bits total){}{}",
-    std::mem::size_of::<integer_limb::Limb>() * 8,
-    type_name::<LimbVecScalar>(),
-    LV_LEN,
-    LV_LEN as u32 * LimbVecScalar::BITS,
-    type_name::<WideVecScalar>(),
-    WV_LEN,
-    WV_LEN as u32 * WideVecScalar::BITS,
-    if cfg!(debug_assertions) {
-        "\nNOTICE: Debug assertions are enabled. Expect this to cause a significant slowdown!"
-    } else {
-        "\n"
-    },
-    if cfg!(feature = "1g-pages") {
-        "\n1 GiB huge pages are enabled.\n"
-    } else {
-        "\n"
-    }
-);
+        std::mem::size_of::<Limb>() * 8,
+        type_name::<LimbVecScalar>(),
+        LV_LEN,
+        LV_LEN as u32 * LimbVecScalar::BITS,
+        type_name::<WideVecScalar>(),
+        WV_LEN,
+        WV_LEN as u32 * WideVecScalar::BITS,
+        if cfg!(debug_assertions) {
+            "\nNOTICE: Debug assertions are enabled. Expect this to cause a significant slowdown!"
+        } else {
+            "\n"
+        },
+        if cfg!(feature = "1g-pages") {
+            "\n1 GiB huge pages are enabled.\n"
+        } else {
+            "\n"
+        }
+    );
 
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
@@ -193,7 +198,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match std::fs::read_dir(checkpoint_path) {
             Ok(entries) => {
-                eprintln!("Using pre-existing checkpoints folder at {}", checkpoint_path.display());
+                eprintln!(
+                    "Using pre-existing checkpoints folder at {}",
+                    checkpoint_path.display()
+                );
                 // since the folder exists, get the `Path`s of all files inside of it
                 // filter out those that are irrelevant to our current seed
                 let mut checkpoint_files: Vec<std::path::PathBuf> = entries
@@ -301,10 +309,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "windows")]
         {
             let mut console_info = CONSOLE_SCREEN_BUFFER_INFO::default();
-            let output = unsafe { GetConsoleScreenBufferInfo(GetCurrentProcess(), &mut console_info) };
+            let output =
+                unsafe { GetConsoleScreenBufferInfo(GetCurrentProcess(), &mut console_info) };
             match output {
                 Ok(_) => (console_info.dwSize.X).min(255),
-                Err(_) => {63},
+                Err(_) => 63,
             }
         }
 

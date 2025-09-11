@@ -1,4 +1,3 @@
-//#![allow(unused)]
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -131,11 +130,9 @@ mod huge_page_alloc {
         core::{Result as WinResult, w},
     };
 
-    #[allow(dead_code)]
     #[derive(Clone, Copy)]
-    pub(crate) struct HugePageAllocator;
+    pub struct HugePageAllocator;
 
-    #[allow(dead_code)]
     impl HugePageAllocator {
         #[cfg(target_os = "windows")]
         fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
@@ -182,19 +179,19 @@ mod huge_page_alloc {
         }
 
         #[cfg(target_family = "windows")]
-        pub(crate) fn init() -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn init() -> Result<Self, Box<dyn std::error::Error>> {
             let process_handle = unsafe { GetCurrentProcess() };
             Self::enable_memory_lock_privilege(process_handle)?;
             Ok(Self)
         }
 
         #[cfg(target_family = "unix")]
-        pub(crate) fn init() -> Result<Self> {
+        pub fn init() -> Result<Self> {
             todo!()
         }
 
         #[cfg(all(not(target_family = "windows"), not(target_family = "unix")))]
-        pub(crate) fn init() -> Result<Self> {
+        pub fn init() -> Result<Self> {
             unimplemented!()
         }
     }
@@ -227,7 +224,8 @@ mod huge_page_alloc {
                 let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
 
                 #[cfg(feature = "1g-pages")]
-                let alignment = (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
+                let alignment =
+                    (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
 
                 let mut requirements = MEM_ADDRESS_REQUIREMENTS {
                     LowestStartingAddress: zeroed(),
@@ -257,7 +255,8 @@ mod huge_page_alloc {
                 };
 
                 #[cfg(feature = "1g-pages")]
-                let allocation_size = aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
+                let allocation_size =
+                    aligned_size.div_ceil(HUGE_PAGE_SIZE_BYTES) * HUGE_PAGE_SIZE_BYTES;
 
                 #[cfg(not(feature = "1g-pages"))]
                 let allocation_size = aligned_size;
@@ -298,13 +297,13 @@ mod huge_page_alloc {
 
 #[cfg(not(target_family = "wasm"))]
 #[allow(unused_imports)]
-pub(crate) use huge_page_alloc::*;
+pub use huge_page_alloc::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
 #[derive(Clone, Copy)]
-pub(crate) struct Limb(pub(crate) LimbVec);
+pub struct Limb(pub LimbVec);
 
 impl const std::cmp::PartialEq for Limb {
     fn eq(&self, other: &Self) -> bool {
@@ -366,12 +365,11 @@ impl const From<LimbVec> for Limb {
 
 impl Limb {
     #[inline]
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self(LimbVec::splat(0))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn new_from_value(value: u128) -> Self {
+    pub fn new_from_value(value: u128) -> Self {
         let input_digits = value.to_string();
         let mut digits = LimbVec::splat(0);
         for (i, c) in input_digits.chars().rev().enumerate() {
@@ -493,26 +491,24 @@ impl std::fmt::Debug for Limb {
 }
 
 #[derive(Clone)]
-pub struct Integer<T: Allocator + Clone + Copy>(pub(crate) Vec<Limb, T>);
+pub struct Integer<T: Allocator + Clone + Copy>(pub Vec<Limb, T>);
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Checkpoint {
+pub struct Checkpoint {
     iteration: usize,
     integer: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl Checkpoint {
-    pub(crate) const fn new(iteration: usize, integer: Vec<u8>) -> Self {
+    pub const fn new(iteration: usize, integer: Vec<u8>) -> Self {
         Self { iteration, integer }
     }
 
-    pub(crate) fn data(self) -> (usize, Vec<u8>) {
+    pub fn data(self) -> (usize, Vec<u8>) {
         (self.iteration, self.integer)
     }
 }
 
-#[allow(dead_code)]
 impl<T: Allocator + Clone + Copy> Integer<T> {
     // #[inline]
     // pub fn iter(&self) -> std::slice::Iter<'_, Limb> {
@@ -530,7 +526,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     // }
 
     #[inline]
-    pub(crate) fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
+    pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to reverse an empty integer");
@@ -582,6 +578,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
+    #[allow(unused)]
     fn reverse_interleave_x2(lhs: &mut LimbVec, rhs: &mut LimbVec) {
         // logically these are just bitwise ANDs; however, since the dst register
         // is the same as a src register, specifically VPXOR can have a much lower
@@ -742,7 +739,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    pub(crate) fn show_differences(&self, rhs: &Self) -> String {
+    pub fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to show differences between empty integers");
@@ -822,22 +819,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         false
     }
 
-    pub(crate) fn is_palindrome(&self, other: &Self) -> bool {
-        if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to check if an empty integer is a palindrome");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
-        }
-
-        self == other
-    }
-
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried to get the length of an empty integer");
@@ -851,7 +834,38 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
     }
 
-    pub(crate) fn pack(self) -> Integer<GlobalAllocator> {
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        if self.0.is_empty() {
+            #[cfg(debug_assertions)]
+            unreachable!(); // Any operations with Integers that contain no data are #UB
+
+            #[cfg(not(debug_assertions))]
+            unsafe {
+                unreachable_unchecked(); // give the compiler a chance to refuse to run with an unsafe precondition check
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        return {
+            let mut i: usize = 0;
+            while i < self.0.len() {
+                if self.0.as_slice()[i].is_empty() {
+                    i += 1
+                } else {
+                    return false;
+                }
+            }
+            true
+        };
+
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
+    }
+
+    pub fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             unreachable!("Tried pack an empty integer");
@@ -911,7 +925,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
+    pub fn into_bytes(self) -> Vec<u8> {
         let mut output: Vec<LimbVecScalar> = Vec::with_capacity(self.0.len() * LV_LEN);
         for limb in &self.0 {
             output.extend_from_slice(&limb.into_bytes());
@@ -930,7 +944,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    pub(crate) fn into_checkpoint(self, iteration: usize) -> Checkpoint {
+    pub fn into_checkpoint(self, iteration: usize) -> Checkpoint {
         Checkpoint {
             iteration,
             integer: self.pack().into_bytes(),
@@ -938,7 +952,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    pub(crate) fn from_checkpoint(input: Checkpoint, allocator: T) -> (Integer<T>, usize) {
+    pub fn from_checkpoint(input: Checkpoint, allocator: T) -> (Integer<T>, usize) {
         let chopped_data = Integer::<T>::chop(input.integer).unwrap();
         let packed_integer = Integer::from_bytes(chopped_data, allocator);
         let integer = packed_integer.unpack(allocator);

@@ -1,4 +1,5 @@
 use super::*;
+use lychrel_base10_simd::integer;
 
 #[test]
 fn test_iterate() {
