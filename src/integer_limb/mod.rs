@@ -1,6 +1,8 @@
 #[cfg(target_arch = "x86")]
+#[allow(unused_imports)]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
+#[allow(unused_imports)]
 use std::arch::x86_64::*;
 
 use std::alloc::{Allocator, Global as GlobalAllocator};
