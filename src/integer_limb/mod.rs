@@ -426,10 +426,12 @@ impl Limb {
         (Limb((self.0 << 4) >> 4), Limb(self.0 >> 4))
     }
 
+    #[inline]
     const fn into_bytes(self) -> [LimbVecScalar; LV_LEN] {
         self.0.to_array()
     }
 
+    #[inline]
     const fn from_bytes(input: [LimbVecScalar; LV_LEN]) -> Self {
         Self(LimbVec::from_array(input))
     }
@@ -594,7 +596,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let total_limbs = self.0.len();
 
-        //self.0.push(Limb::new()); // padding
+        self.0.push(Limb::new()); // padding
 
         let skip_len = LV_LEN - self.0[total_limbs - 1].len();
 
@@ -642,12 +644,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v2:  287.6 sec
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
-                // target-cpu = znver5:     14.5 sec
+                // target-cpu = znver5:     14.5 sexc
                 #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
-                {
+                if overflowed {
                     *limb = _mm512_mask_add_epi64(
                         limb.0.into(),
-                        overflowed as u8,
+                        1,
                         limb.0.into(),
                         _mm512_set1_epi64(1),
                     )
@@ -662,36 +664,47 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 overflowed = false;
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx"),))]
-                loop {
-                    let carry_mask: __mmask64 =
-                        _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                {
+                    let mut carry_mask: __mmask64 = __mmask64::MAX;
+                    loop {
+                        carry_mask = _mm512_mask_cmpge_epu8_mask(
+                            carry_mask,
+                            limb.0.into(),
+                            _mm512_set1_epi8(10),
+                        );
+                        //carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                        if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                            overflowed = true;
+                        } else if carry_mask == 0 {
+                            break;
+                        }
 
-                    if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
-                        overflowed = true;
-                    } else if carry_mask == 0 {
-                        cold_path();
-                        break;
+                        ever_carried = true;
+
+                        *limb = _mm512_mask_sub_epi8(
+                            limb.0.into(),
+                            carry_mask,
+                            limb.0.into(),
+                            _mm512_set1_epi8(10),
+                        )
+                        .into();
+                        carry_mask <<= 1;
+
+                        // if carry_mask == 0 {
+                        //     break;
+                        // }
+
+                        *limb = _mm512_mask_add_epi8(
+                            limb.0.into(),
+                            carry_mask,
+                            limb.0.into(),
+                            _mm512_set1_epi8(1),
+                        )
+                        .into();
                     }
-
-                    ever_carried = true;
-
-                    *limb = _mm512_mask_sub_epi8(
-                        limb.0.into(),
-                        carry_mask,
-                        limb.0.into(),
-                        _mm512_set1_epi8(10),
-                    )
-                    .into();
-                    *limb = _mm512_mask_add_epi8(
-                        limb.0.into(),
-                        carry_mask << 1,
-                        limb.0.into(),
-                        _mm512_set1_epi8(1),
-                    )
-                    .into();
                 }
 
-                #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx",))]
+                #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 loop {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
                     if carry_mask.test(LV_LEN - 1) {
@@ -716,15 +729,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        // if overflowed {
-        //     unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
-        // } else {
-        //     self.0.pop();
-        // }
         if overflowed {
             unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
         } else {
-            //self.0.pop();
+            self.0.pop();
         }
         ever_carried
     }
