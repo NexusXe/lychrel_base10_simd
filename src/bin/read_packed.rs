@@ -51,12 +51,13 @@ fn main() {
     }
 
     if help {
-        eprintln!("Usage: {} [options] <file_path>", args[0]);
-        eprintln!(
+        println!("Usage: {} [options] <file_path>", args[0]);
+        println!(
             "Options:
         -h|--help: Display this help
         -v|--verify: Verifies that the read Integer is valid"
         );
+        std::process::exit(0);
     }
 
     let file_path = file_path.unwrap();
