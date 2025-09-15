@@ -641,39 +641,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         + transmute::<LimbVec, WideVec>(reversed_limb),
                 );
 
-                // target-cpu = x86-64-v2:  287.6 sec
-                // target-cpu = x86-64-v3:  266.1 sec
-                // target-cpu = x86-64-v4:  15.1 sec
-                // target-cpu = znver5:     14.5 sec
-                // likely: 54.6 sec 54.7 sec
-                // likely + assert: 54.1 sec 54.1 sec 54.3 sec
-                // no likely: 53.9 sec 54.2 sec 54.0 sec
-                // no likely + assert: 55.5 sec
-                // #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
-                // if likely(overflowed) {
-                //     let result: LimbVec = _mm512_mask_add_epi64(
-                //         limb.0.into(),
-                //         overflowed as _,
-                //         limb.0.into(),
-                //         _mm512_set1_epi64(1),
-                //     ).into();
-
-                //     if result.as_array()[0] > 19 {
-                //         #[cfg(debug_assertions)]
-                //         unreachable!();
-
-                //         #[cfg(not(debug_assertions))]
-                //         unreachable_unchecked();
-                //     }
-
-                //     limb.0 = result;
-                // }
-
-                // #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
-                // if overflowed {
-                //     (*((limb_ptr as *const WideVec) as *mut WideVec)).as_mut_array()[0] += 1;
-                //     //limb.0.as_mut_array()[0] += 1;
-                // }
                 let forward_carry = overflowed;
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
@@ -684,8 +651,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
-                    overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0;
+                    overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
+                    // branch, but nothing relies on `ever_carried` for a while
                     if carry_mask != 0 {
                         ever_carried = true;
                     }
@@ -700,7 +668,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                     limb.0 = _mm512_mask_add_epi8(
                         limb.0.into(),
-                        (carry_mask << 1) | forward_carry as __mmask64,
+                        (carry_mask << 1) | forward_carry as __mmask64, // do a round of carry propogation AND deal with a forward carry. absolute cinema
                         limb.0.into(),
                         _mm512_set1_epi8(1),
                     )
@@ -753,14 +721,18 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     if carry_mask.any() {
                         ever_carried = true;
                     }
-                    
 
                     for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
                         if carry_mask.test(idx) {
                             *byte -= 10;
                         }
 
-                        if carry_mask.shift_elements_right::<1usize>(false).test(idx) || (idx == 0 && forward_carry) {
+                        if carry_mask.shift_elements_right::<1usize>(false).test(idx)
+                            || (idx == 0 && forward_carry)
+                        // I am fairly confident that this isn't the best way to do this.
+                        // However, this is as close as it gets to being exactly what the
+                        // AVX-512 code path is doing.
+                        {
                             *byte += 1;
                         }
                     }
