@@ -649,40 +649,66 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // likely + assert: 54.1 sec 54.1 sec 54.3 sec
                 // no likely: 53.9 sec 54.2 sec 54.0 sec
                 // no likely + assert: 55.5 sec
-                #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
-                if likely(overflowed) {
-                    let result: LimbVec = _mm512_mask_add_epi64(
-                        limb.0.into(),
-                        overflowed as _,
-                        limb.0.into(),
-                        _mm512_set1_epi64(1),
-                    ).into();
+                // #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+                // if likely(overflowed) {
+                //     let result: LimbVec = _mm512_mask_add_epi64(
+                //         limb.0.into(),
+                //         overflowed as _,
+                //         limb.0.into(),
+                //         _mm512_set1_epi64(1),
+                //     ).into();
 
-                    if result.as_array()[0] > 19 {
-                        #[cfg(debug_assertions)]
-                        unreachable!();
+                //     if result.as_array()[0] > 19 {
+                //         #[cfg(debug_assertions)]
+                //         unreachable!();
 
-                        #[cfg(not(debug_assertions))]
-                        unreachable_unchecked();
-                    }
+                //         #[cfg(not(debug_assertions))]
+                //         unreachable_unchecked();
+                //     }
 
-                    limb.0 = result;
-                }
+                //     limb.0 = result;
+                // }
 
-                #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
-                if overflowed {
-                    (*((limb_ptr as *const WideVec) as *mut WideVec)).as_mut_array()[0] += 1;
-                    //limb.0.as_mut_array()[0] += 1;
-                }
-
-                overflowed = false;
-
-                
+                // #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
+                // if overflowed {
+                //     (*((limb_ptr as *const WideVec) as *mut WideVec)).as_mut_array()[0] += 1;
+                //     //limb.0.as_mut_array()[0] += 1;
+                // }
+                let forward_carry = overflowed;
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
                     const CARRY_MASK_CMP: u8x64 = u8x64::splat(10);
-                    
+                    // incorporate previous limb carry into carry propogation
+                    // do the loop once by hand, with some tweaks
+                    // doing it like this instead of adding one to the lowest digit separately is ~34% faster
+                    let carry_mask = _mm512_cmpge_epu8_mask(
+                        limb.0.into(),
+                        CARRY_MASK_CMP.into(),
+                    );
+
+                    overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0;
+
+                    if carry_mask != 0 {
+                        ever_carried = true;
+                    }
+
+                    limb.0 = _mm512_mask_sub_epi8(
+                        limb.0.into(),
+                        carry_mask,
+                        limb.0.into(),
+                        CARRY_MASK_CMP.into(),
+                    )
+                    .into();
+
+                    limb.0 = _mm512_mask_add_epi8(
+                        limb.0.into(),
+                        (carry_mask << 1) | forward_carry as __mmask64,
+                        limb.0.into(),
+                        _mm512_set1_epi8(1),
+                    )
+                    .into();
+
                     loop {
                         let carry_mask = _mm512_cmpge_epu8_mask(
                             //carry_mask,
@@ -703,7 +729,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             carry_mask,
                             limb.0.into(),
                             CARRY_MASK_CMP.into(),
-                        ).into();
+                        )
+                        .into();
                         //carry_mask <<= 1;
 
                         // if carry_mask == 0 {
@@ -713,6 +740,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         limb.0 = _mm512_mask_add_epi8(
                             limb.0.into(),
                             carry_mask << 1,
+                            //carry_mask << 1,
                             limb.0.into(),
                             _mm512_set1_epi8(1),
                         )
