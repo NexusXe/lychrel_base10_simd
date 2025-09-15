@@ -636,10 +636,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 limb.0 = (limb.0 << 4) >> 4;
 
-                *limb = Limb(transmute::<WideVec, LimbVec>(
+                limb.0 = transmute::<WideVec, LimbVec>(
                     transmute::<LimbVec, WideVec>(limb.0)
                         + transmute::<LimbVec, WideVec>(reversed_limb),
-                ));
+                );
 
                 // target-cpu = x86-64-v2:  287.6 sec
                 // target-cpu = x86-64-v3:  266.1 sec
@@ -666,7 +666,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         unreachable_unchecked();
                     }
 
-                    *limb = result.into();
+                    limb.0 = result;
                 }
 
                 #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
@@ -697,7 +697,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                         ever_carried = true;
 
-                        *limb = _mm512_mask_sub_epi8(
+                        limb.0 = _mm512_mask_sub_epi8(
                             limb.0.into(),
                             carry_mask,
                             limb.0.into(),
@@ -709,7 +709,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         //     break;
                         // }
 
-                        *limb = _mm512_mask_add_epi8(
+                        limb.0 = _mm512_mask_add_epi8(
                             limb.0.into(),
                             carry_mask << 1,
                             limb.0.into(),
