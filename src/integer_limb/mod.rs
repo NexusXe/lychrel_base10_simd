@@ -644,33 +644,49 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // target-cpu = x86-64-v2:  287.6 sec
                 // target-cpu = x86-64-v3:  266.1 sec
                 // target-cpu = x86-64-v4:  15.1 sec
-                // target-cpu = znver5:     14.5 sexc
+                // target-cpu = znver5:     14.5 sec
+                // likely: 54.6 sec 54.7 sec
+                // likely + assert: 54.1 sec 54.1 sec 54.3 sec
+                // no likely: 53.9 sec 54.2 sec 54.0 sec
+                // no likely + assert: 55.5 sec
                 #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
                 if likely(overflowed) {
-                    *limb = _mm512_mask_add_epi64(
+                    let result: LimbVec = _mm512_mask_add_epi64(
                         limb.0.into(),
-                        1,
+                        overflowed as _,
                         limb.0.into(),
                         _mm512_set1_epi64(1),
-                    )
-                    .into();
+                    ).into();
+
+                    if result.as_array()[0] > 19 {
+                        #[cfg(debug_assertions)]
+                        unreachable!();
+
+                        #[cfg(not(debug_assertions))]
+                        unreachable_unchecked();
+                    }
+
+                    *limb = result.into();
                 }
 
                 #[cfg(any(not(target_feature = "avx512f"), feature = "no-avx",))]
                 if overflowed {
-                    limb.0.as_mut_array()[0] += 1;
+                    (*((limb_ptr as *const WideVec) as *mut WideVec)).as_mut_array()[0] += 1;
+                    //limb.0.as_mut_array()[0] += 1;
                 }
 
                 overflowed = false;
 
-                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx"),))]
+                
+
+                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
-                    let mut carry_mask: __mmask64 = __mmask64::MAX;
+                    const CARRY_MASK_CMP: u8x64 = u8x64::splat(10);
                     loop {
-                        carry_mask = _mm512_mask_cmpge_epu8_mask(
-                            carry_mask,
+                        let carry_mask = _mm512_cmpge_epu8_mask(
+                            //carry_mask,
                             limb.0.into(),
-                            _mm512_set1_epi8(10),
+                            CARRY_MASK_CMP.into(),
                         );
                         //carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
                         if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
@@ -685,10 +701,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             limb.0.into(),
                             carry_mask,
                             limb.0.into(),
-                            _mm512_set1_epi8(10),
-                        )
-                        .into();
-                        carry_mask <<= 1;
+                            CARRY_MASK_CMP.into(),
+                        ).into();
+                        //carry_mask <<= 1;
 
                         // if carry_mask == 0 {
                         //     break;
@@ -696,7 +711,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                         *limb = _mm512_mask_add_epi8(
                             limb.0.into(),
-                            carry_mask,
+                            carry_mask << 1,
                             limb.0.into(),
                             _mm512_set1_epi8(1),
                         )
