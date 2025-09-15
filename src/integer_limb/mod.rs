@@ -610,11 +610,16 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
+                // shift these as qwords since it's faster
+                let r_revshifted = transmute::<WideVec, LimbVec>(
+                    transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
+                );
+                let l_revshifted = transmute::<WideVec, LimbVec>(
+                    transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
+                );
 
-                let lhs_output = *lhs ^ (rhs.reverse() << 4);
-                let rhs_output = *rhs ^ (lhs.reverse() << 4);
-                //let rhs_output =  Limb::ror4_galois(lhs_output).reverse();
-
+                let lhs_output = *lhs ^ r_revshifted; // logically OR, but shared-operand XOR doesn't use pipes (somehow)
+                let rhs_output = *rhs ^ l_revshifted;
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
@@ -675,12 +680,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     .into();
 
                     loop {
-                        let carry_mask = _mm512_cmpge_epu8_mask(
-                            //carry_mask,
-                            limb.0.into(),
-                            CARRY_MASK_CMP.into(),
-                        );
-                        //carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), _mm512_set1_epi8(10));
+                        let carry_mask =
+                            _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
+
                         if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
                             overflowed = true;
                         } else if carry_mask == 0 {
@@ -696,16 +698,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             CARRY_MASK_CMP.into(),
                         )
                         .into();
-                        //carry_mask <<= 1;
-
-                        // if carry_mask == 0 {
-                        //     break;
-                        // }
 
                         limb.0 = _mm512_mask_add_epi8(
                             limb.0.into(),
                             carry_mask << 1,
-                            //carry_mask << 1,
                             limb.0.into(),
                             _mm512_set1_epi8(1),
                         )
@@ -732,6 +728,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         // I am fairly confident that this isn't the best way to do this.
                         // However, this is as close as it gets to being exactly what the
                         // AVX-512 code path is doing.
+                        // TODO: speedup
                         {
                             *byte += 1;
                         }
@@ -767,7 +764,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         } else {
             self.0.pop();
         }
-        ever_carried
+        likely(ever_carried)
     }
 
     #[inline]
