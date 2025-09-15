@@ -262,7 +262,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
                         (initial_value, starting_iteration) =
                             Integer::from_checkpoint(checkpoint, allocator);
-                        println!("Starting from checkpoint at iteration {starting_iteration:}");
+                        println!("Starting from checkpoint at iteration {starting_iteration:}\nCheckpoint has {:} limbs and {:} digits.", initial_value.0.len(), initial_value.len());
                         starting_iteration += 1;
                     }
 
@@ -289,9 +289,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if args.contains(&"--long-bench".to_string()) {
         eprintln!("Performing long benchmark run.");
         LIMIT_SHORT * 2
+    } else if args.contains(&"--stop-at".to_string()) {
+        let stop_at_index = args.iter().position(|arg| arg == "--stop-at").unwrap();
+        let stop_at_value = match args.get(stop_at_index + 1).expect("Please specify an iteration index to stop at").parse::<usize>() {
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("Please specify a valid iteration index to stop at");
+                std::process::exit(1);
+            }
+        };
+        eprintln!("Stopping at iteration {stop_at_value:}");
+        stop_at_value + 1
     } else {
         LIMIT
     };
+
+    println!("limit: {limit:}");
     let console_width = {
         #[cfg(target_family = "windows")]
         {
@@ -490,10 +503,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    if unlikely(found_palindrome) {
-        println!("Writing packed found palindrome to \"FOUND_{last_iteration}.txt\"");
+    let file_prefix = if found_palindrome {
+        "FOUND_"
+    } else {
+        "yield_"
+    };
+
+    if unlikely(found_palindrome) || args.contains(&"--yield".to_string()) {
+        println!("Writing packed found palindrome to \"{file_prefix}{last_iteration}.txt\"");
         std::fs::write(
-            format!("FOUND_{last_iteration}.txt"),
+            format!("{file_prefix}{last_iteration}.txt"),
             end_integer.pack().into_bytes(),
         )
         .unwrap();
