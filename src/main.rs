@@ -129,7 +129,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Limb Vector Scalar: {}
     Limb Vector Width:  {} ({} bits total)
     Packed Limb Scalar: {}
-    Packed Limb Width:  {}  ({} bits total){}{}",
+    Packed Limb Width:  {}  ({} bits total)\n{}\n{}",
         std::mem::size_of::<Limb>() * 8,
         type_name::<LimbVecScalar>(),
         LV_LEN,
@@ -138,14 +138,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         WV_LEN,
         WV_LEN as u32 * WideVecScalar::BITS,
         if cfg!(debug_assertions) {
-            "\nNOTICE: Debug assertions are enabled. Expect this to cause a significant slowdown!"
+            "NOTICE: Debug assertions are enabled. Expect this to cause a significant slowdown!"
         } else {
-            "\n"
+            ""
         },
         if cfg!(feature = "1g-pages") {
-            "\n1 GiB huge pages are enabled.\n"
+            "1 GiB huge pages are enabled."
         } else {
-            "\n"
+            ""
         }
     );
 
@@ -471,9 +471,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             use std::intrinsics::{fdiv_fast, fmul_fast};
             let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
-            println!("Current data rate: {:.2} GiBps", unsafe {
-                fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)
-            });
+            println!("Current data rate: {:.2} GiBps ({:.3} MegaLimbs / sec)",
+                unsafe{fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)},
+                unsafe{fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64)},
+            );
             // current rate = 64(num_limbs) / 1073741824
         }
     }
