@@ -175,11 +175,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => DEFAULT_CHECKPOINT_DIR.to_string(),
     };
 
-    if args.contains(&"--start-at".to_string()) || (
-        !args.contains(&"--no-checkpoint".to_string())
-        && !args.contains(&"--bench".to_string())
-        && !args.contains(&"--long-bench".to_string())
-        && !args.contains(&"--short".to_string()))
+    if args.contains(&"--start-at".to_string())
+        || (!args.contains(&"--no-checkpoint".to_string())
+            && !args.contains(&"--bench".to_string())
+            && !args.contains(&"--long-bench".to_string())
+            && !args.contains(&"--short".to_string()))
     {
         let checkpoint_path = Path::new(&checkpoint_dir);
 
@@ -262,7 +262,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
                         (initial_value, starting_iteration) =
                             Integer::from_checkpoint(checkpoint, allocator);
-                        println!("Starting from checkpoint at iteration {starting_iteration:}\nCheckpoint has {:} limbs and {:} digits.", initial_value.0.len(), initial_value.len());
+                        println!(
+                            "Starting from checkpoint at iteration {starting_iteration:}\nCheckpoint has {:} limbs and {:} digits.",
+                            initial_value.0.len(),
+                            initial_value.len()
+                        );
                         starting_iteration += 1;
                     }
 
@@ -291,7 +295,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         LIMIT_SHORT * 2
     } else if args.contains(&"--stop-at".to_string()) {
         let stop_at_index = args.iter().position(|arg| arg == "--stop-at").unwrap();
-        let stop_at_value = match args.get(stop_at_index + 1).expect("Please specify an iteration index to stop at").parse::<usize>() {
+        let stop_at_value = match args
+            .get(stop_at_index + 1)
+            .expect("Please specify an iteration index to stop at")
+            .parse::<usize>()
+        {
             Ok(value) => value,
             Err(_) => {
                 eprintln!("Please specify a valid iteration index to stop at");
@@ -503,11 +511,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    let file_prefix = if found_palindrome {
-        "FOUND_"
-    } else {
-        "yield_"
-    };
+    let file_prefix = if found_palindrome { "FOUND_" } else { "yield_" };
 
     if unlikely(found_palindrome) || args.contains(&"--yield".to_string()) {
         println!("Writing packed found palindrome to \"{file_prefix}{last_iteration}.txt\"");

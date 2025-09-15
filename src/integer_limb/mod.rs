@@ -682,6 +682,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
                     const CARRY_MASK_CMP: u8x64 = u8x64::splat(10);
+                    
                     loop {
                         let carry_mask = _mm512_cmpge_epu8_mask(
                             //carry_mask,
