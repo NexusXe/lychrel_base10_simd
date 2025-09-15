@@ -682,10 +682,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
-                    let carry_mask = _mm512_cmpge_epu8_mask(
-                        limb.0.into(),
-                        CARRY_MASK_CMP.into(),
-                    );
+                    let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
                     overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0;
 
@@ -749,24 +746,44 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 }
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
-                loop {
+                {
                     let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
-                    if carry_mask.test(LV_LEN - 1) {
-                        overflowed = true;
-                    } else if !carry_mask.any() {
-                        cold_path();
-                        break;
-                    }
+                    overflowed = carry_mask.test(LV_LEN - 1);
 
-                    ever_carried = true;
+                    if carry_mask.any() {
+                        ever_carried = true;
+                    }
+                    
 
                     for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
                         if carry_mask.test(idx) {
                             *byte -= 10;
                         }
 
-                        if carry_mask.shift_elements_right::<1usize>(false).test(idx) {
+                        if carry_mask.shift_elements_right::<1usize>(false).test(idx) || (idx == 0 && forward_carry) {
                             *byte += 1;
+                        }
+                    }
+
+                    loop {
+                        let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
+                        if carry_mask.test(LV_LEN - 1) {
+                            overflowed = true;
+                        } else if !carry_mask.any() {
+                            cold_path();
+                            break;
+                        }
+
+                        ever_carried = true;
+
+                        for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
+                            if carry_mask.test(idx) {
+                                *byte -= 10;
+                            }
+
+                            if carry_mask.shift_elements_right::<1usize>(false).test(idx) {
+                                *byte += 1;
+                            }
                         }
                     }
                 }
