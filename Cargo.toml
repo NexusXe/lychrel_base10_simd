@@ -11,6 +11,7 @@ no-verify = []
 no-avx = []
 64-byte-limbs = []
 1g-pages = []
+global-alloc = []
 
 [dependencies]
 compile-time = "0.2"

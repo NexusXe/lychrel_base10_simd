@@ -6,7 +6,7 @@
 #![feature(allocator_api)]
 #![deny(clippy::all)]
 
-#[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
+#[cfg(all(target_pointer_width = "64", not(target_family = "wasm"), not(feature = "global-alloc")))]
 use lychrel_base10_simd::integer_limb::HugePageAllocator;
 
 use lychrel_base10_simd::integer_limb::{
@@ -152,10 +152,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let _ = affinity::set_thread_affinity([5]);
 
-    #[cfg(all(target_pointer_width = "64", not(target_family = "wasm")))]
+    #[cfg(all(target_pointer_width = "64", not(target_family = "wasm"), not(feature = "global-alloc")))]
     let allocator = HugePageAllocator::init()?;
 
-    #[cfg(any(not(target_pointer_width = "64"), target_family = "wasm"))]
+    #[cfg(any(not(target_pointer_width = "64"), target_family = "wasm", feature = "global-alloc"))]
     let allocator = Global;
 
     let initial_limb = Limb::new_from_value(INITIAL_SEED);
