@@ -616,15 +616,15 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
                 // shift these as qwords since it's faster
-                let r_revshifted = transmute::<WideVec, LimbVec>(
-                    transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
-                );
-                let l_revshifted = transmute::<WideVec, LimbVec>(
-                    transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
-                );
 
-                let lhs_output = *lhs ^ r_revshifted; // logically OR, but shared-operand XOR doesn't use pipes (somehow)
-                let rhs_output = *rhs ^ l_revshifted;
+                let lhs_output = *lhs
+                    ^ transmute::<WideVec, LimbVec>(
+                        transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
+                    ); // logically OR, but shared-operand XOR doesn't use pipes (somehow)
+                let rhs_output = *rhs
+                    ^ transmute::<WideVec, LimbVec>(
+                        transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
+                    );
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
@@ -646,7 +646,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
 
                 #[cfg(not(debug_assertions))]
-                let reversed_limb: LimbVec = read_unaligned((limb_ptr as usize + skip_len) as *const LimbVec) >> 4;
+                let reversed_limb: LimbVec =
+                    read_unaligned((limb_ptr as usize + skip_len) as *const LimbVec) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
@@ -664,40 +665,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
-                    overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
+                    if likely((carry_mask != 0) || forward_carry) {
+                        overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
-                    // branch, but nothing relies on `ever_carried` for a while
-                    if carry_mask != 0 {
-                        ever_carried = true;
-                    }
-
-                    limb.0 = _mm512_mask_sub_epi8(
-                        limb.0.into(),
-                        carry_mask,
-                        limb.0.into(),
-                        CARRY_MASK_CMP.into(),
-                    )
-                    .into();
-
-                    limb.0 = _mm512_mask_add_epi8(
-                        limb.0.into(),
-                        (carry_mask << 1) | forward_carry as __mmask64, // do a round of carry propogation AND deal with a forward carry. absolute cinema
-                        limb.0.into(),
-                        _mm512_set1_epi8(1),
-                    )
-                    .into();
-
-                    loop {
-                        let carry_mask =
-                            _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
-
-                        if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
-                            overflowed = true;
-                        } else if carry_mask == 0 {
-                            break;
+                        // branch, but nothing relies on `ever_carried` for a while
+                        if carry_mask != 0 {
+                            ever_carried = true;
                         }
-
-                        ever_carried = true;
 
                         limb.0 = _mm512_mask_sub_epi8(
                             limb.0.into(),
@@ -709,11 +683,40 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                         limb.0 = _mm512_mask_add_epi8(
                             limb.0.into(),
-                            carry_mask << 1,
+                            (carry_mask << 1) | forward_carry as __mmask64, // do a round of carry propogation AND deal with a forward carry. absolute cinema
                             limb.0.into(),
                             _mm512_set1_epi8(1),
                         )
                         .into();
+
+                        loop {
+                            let carry_mask =
+                                _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
+
+                            if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                                overflowed = true;
+                            } else if carry_mask == 0 {
+                                break;
+                            }
+
+                            ever_carried = true;
+
+                            limb.0 = _mm512_mask_sub_epi8(
+                                limb.0.into(),
+                                carry_mask,
+                                limb.0.into(),
+                                CARRY_MASK_CMP.into(),
+                            )
+                            .into();
+
+                            limb.0 = _mm512_mask_add_epi8(
+                                limb.0.into(),
+                                carry_mask << 1,
+                                limb.0.into(),
+                                _mm512_set1_epi8(1),
+                            )
+                            .into();
+                        }
                     }
                 }
 
@@ -762,10 +765,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         if overflowed {
             #[cfg(debug_assertions)]
-            unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
+            unsafe {
+                *(rev_ptr.add(1) as *mut u8) = 1
+            }; // this limb is already zeroed for padding, so just set one byte
 
             #[cfg(not(debug_assertions))]
-            unsafe { // for some reason an overflow check is happening on this addition
+            unsafe {
+                // for some reason an overflow check is happening on this addition
                 let ptr = rev_ptr as usize;
                 *(ptr.unchecked_add(LV_LEN) as *mut u8) = 1; // do the math manually with unchecked addition to remove an overflow check branch 
             }

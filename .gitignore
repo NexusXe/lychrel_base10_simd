@@ -11,3 +11,5 @@ checkpoints
 checkpoints/
 *.exe
 compare/
+
+.cargo/config.toml
