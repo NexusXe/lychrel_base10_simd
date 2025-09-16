@@ -603,10 +603,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         self.0.push(Limb::new()); // padding
 
-        let skip_len = LV_LEN - self.0[total_limbs - 1].len();
+        let skip_len = LV_LEN - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
 
         let limbs_ptr = self.0.as_mut_ptr() as *mut LimbVec;
-        let rev_ptr = &mut self.0[total_limbs - 1].0 as *mut LimbVec;
+        let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs - 1).0 } as *mut LimbVec;
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
@@ -642,7 +642,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             unsafe {
                 let limb_ptr = &limb.0 as *const LimbVec;
 
+                #[cfg(debug_assertions)]
                 let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
+
+                #[cfg(not(debug_assertions))]
+                let reversed_limb: LimbVec = read_unaligned((limb_ptr as usize + skip_len) as *const LimbVec) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
@@ -757,7 +761,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if overflowed {
+            #[cfg(debug_assertions)]
             unsafe { *(rev_ptr.add(1) as *mut u8) = 1 }; // this limb is already zeroed for padding, so just set one byte
+
+            #[cfg(not(debug_assertions))]
+            unsafe { // for some reason an overflow check is happening on this addition
+                let ptr = rev_ptr as usize;
+                *(ptr.unchecked_add(LV_LEN) as *mut u8) = 1; // do the math manually with unchecked addition to remove an overflow check branch 
+            }
         } else {
             self.0.pop();
         }
