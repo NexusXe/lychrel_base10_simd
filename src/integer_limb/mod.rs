@@ -310,7 +310,9 @@ pub use huge_page_alloc::*;
 pub struct Limb(pub LimbVec);
 
 impl const std::cmp::PartialEq for Limb {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
+        #[inline]
         const fn eq_const(lhs: LimbVec, rhs: LimbVec) -> bool {
             let arr1 = lhs.to_array();
             let arr2 = rhs.to_array();
@@ -318,7 +320,7 @@ impl const std::cmp::PartialEq for Limb {
             let arr2_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr2) };
             let mut i: usize = WV_LEN;
             while i > 0 {
-                if arr1_64b[i] == arr2_64b[i] {
+                if arr1_64b[i - 1] == arr2_64b[i - 1] {
                     i -= 1;
                 } else {
                     return false;
@@ -327,6 +329,7 @@ impl const std::cmp::PartialEq for Limb {
             false
         }
 
+        #[inline]
         fn eq_rt(lhs: LimbVec, rhs: LimbVec) -> bool {
             lhs == rhs
         }
