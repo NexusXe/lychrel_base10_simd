@@ -6,11 +6,15 @@
 #![feature(allocator_api)]
 #![deny(clippy::all)]
 
-#[cfg(all(target_pointer_width = "64", not(target_family = "wasm"), not(feature = "global-alloc")))]
+#[cfg(all(
+    target_pointer_width = "64",
+    not(target_family = "wasm"),
+    not(feature = "global-alloc")
+))]
 use lychrel_base10_simd::integer_limb::HugePageAllocator;
 
 use lychrel_base10_simd::integer_limb::{
-    Checkpoint, Integer, LV_LEN, Limb, LimbVecScalar, WV_LEN, WideVecScalar,
+    Checkpoint, Integer, LV_BYTES, LV_LEN, Limb, LimbVecScalar, WV_LEN, WideVecScalar,
 };
 use std::alloc::{Allocator, Global};
 use std::any::type_name;
@@ -149,13 +153,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
     let _ = affinity::set_thread_affinity([5]);
 
-    #[cfg(all(target_pointer_width = "64", not(target_family = "wasm"), not(feature = "global-alloc")))]
+    #[cfg(all(
+        target_pointer_width = "64",
+        not(target_family = "wasm"),
+        not(feature = "global-alloc")
+    ))]
     let allocator = HugePageAllocator::init()?;
 
-    #[cfg(any(not(target_pointer_width = "64"), target_family = "wasm", feature = "global-alloc"))]
+    #[cfg(any(
+        not(target_pointer_width = "64"),
+        target_family = "wasm",
+        feature = "global-alloc"
+    ))]
     let allocator = Global;
 
     let initial_limb = Limb::new_from_value(INITIAL_SEED);
@@ -334,7 +346,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
     let iteration_handle = thread::spawn(move || {
-        #[cfg(not(debug_assertions))]
+        #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
         let _ = affinity::set_thread_affinity([4]);
 
         iterate(starting_iteration..limit, initial_value, Some(tx))
@@ -461,19 +473,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64,);
             if let Some(usage) = memory_stats::memory_stats() {
-                print!(
-                    "{:} MiB physical memory, ",
-                    usage.physical_mem / (1024 * 1024)
-                );
-                println!("{:} MiB virtual memory.", usage.virtual_mem / (1024 * 1024));
+                print!("{:} KiB physical memory, ", usage.physical_mem / 1024);
+                println!("{:} KiB virtual memory.", usage.virtual_mem / 1024);
             } else {
-                println!("{:} KiB of memory", (num_limbs * 64) / 1024);
+                println!("{:} KiB of memory", (num_limbs * LV_BYTES) / 1024);
             }
             use std::intrinsics::{fdiv_fast, fmul_fast};
             let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
-            println!("Current data rate: {:.2} GiBps ({:.3} MegaLimbs / sec)",
-                unsafe{fdiv_fast(tetrahexacontabytes_per_second, 16777216f64)},
-                unsafe{fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64)},
+            println!(
+                "Current data rate: {:.2} GiBps ({:.3} MegaLimbs / sec)",
+                unsafe {
+                    fdiv_fast(
+                        tetrahexacontabytes_per_second,
+                        (1073741824 / LV_BYTES) as f64,
+                    )
+                },
+                unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
             );
             // current rate = 64(num_limbs) / 1073741824
         }
