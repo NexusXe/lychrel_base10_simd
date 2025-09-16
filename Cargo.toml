@@ -12,6 +12,7 @@ no-avx = []
 64-byte-limbs = []
 1g-pages = []
 global-alloc = []
+no-affinity = []
 
 [dependencies]
 compile-time = "0.2"
