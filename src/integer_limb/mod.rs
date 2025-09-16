@@ -647,10 +647,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 );
 
                 let forward_carry = overflowed;
+                const CARRY_MASK_CMP: LimbVec = LimbVec::splat(10);
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
-                    const CARRY_MASK_CMP: u8x64 = u8x64::splat(10);
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
@@ -711,31 +711,21 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
+                    let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
                     overflowed = carry_mask.test(LV_LEN - 1);
 
                     if carry_mask.any() {
                         ever_carried = true;
                     }
 
-                    for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
-                        if carry_mask.test(idx) {
-                            *byte -= 10;
-                        }
+                    let subtracted_limb = limb.0 - CARRY_MASK_CMP;
+                    limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                        if carry_mask.shift_elements_right::<1usize>(false).test(idx)
-                            || (idx == 0 && forward_carry)
-                        // I am fairly confident that this isn't the best way to do this.
-                        // However, this is as close as it gets to being exactly what the
-                        // AVX-512 code path is doing.
-                        // TODO: speedup
-                        {
-                            *byte += 1;
-                        }
-                    }
+                    let added_limb = limb.0 + LimbVec::splat(1);
+                    limb.0 = (carry_mask.shift_elements_right::<1>(forward_carry)).select(added_limb, limb.0);
 
                     loop {
-                        let carry_mask = limb.0.simd_ge(LimbVec::splat(10));
+                        let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
                         if carry_mask.test(LV_LEN - 1) {
                             overflowed = true;
                         } else if !carry_mask.any() {
@@ -745,15 +735,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                         ever_carried = true;
 
-                        for (idx, byte) in limb.0.as_mut_array().iter_mut().enumerate() {
-                            if carry_mask.test(idx) {
-                                *byte -= 10;
-                            }
+                        let subtracted_limb = limb.0 - CARRY_MASK_CMP;
+                        limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                            if carry_mask.shift_elements_right::<1usize>(false).test(idx) {
-                                *byte += 1;
-                            }
-                        }
+                        let added_limb = limb.0 + LimbVec::splat(1);
+                        limb.0 = carry_mask.shift_elements_right::<1>(false).select(added_limb, limb.0);
                     }
                 }
             }
