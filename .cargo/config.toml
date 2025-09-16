@@ -7,4 +7,4 @@ rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "target-featur
 
 [target.x86_64-pc-windows-msvc]
 # rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "fmt-debug=none", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true"]
-# rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "fmt-debug=none", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false"]
+# rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false"]
