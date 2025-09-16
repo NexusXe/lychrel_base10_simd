@@ -326,7 +326,7 @@ impl const std::cmp::PartialEq for Limb {
                     return false;
                 }
             }
-            false
+            true
         }
 
         #[inline]
