@@ -153,32 +153,6 @@ fn test_write_and_read_checkpoint() {
 }
 
 #[test]
-fn test_reverse_interleave_limbs() {
-    let mut a: LimbVec = [1; LV_LEN].into();
-    let mut b: LimbVec = [2; LV_LEN].into();
-
-    Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
-
-    assert_eq!(a, [0x21; LV_LEN].into());
-    assert_eq!(b, [0x12; LV_LEN].into());
-
-    let mut a: LimbVec = [9; LV_LEN].into();
-    let mut b: LimbVec = [0u8; LV_LEN].into();
-
-    Integer::<GlobalAllocator>::reverse_interleave_x2(&mut a, &mut b);
-
-    assert_eq!(a, [0x09; LV_LEN].into());
-    assert_eq!(b, [0x90; LV_LEN].into());
-}
-
-// #[test]
-// fn test_reverse_add() {
-//     let mut integer: Integer = Integer(vec![Limb(u8x64::splat(1)), Limb(u8x64::splat(2))]);
-
-//     integer.fused_reverse_add_packed_asm();
-// }
-
-#[test]
 fn test_fused_reverse_add_asm_simple_interleave() {
     let mut integer = integer!("196");
     let ever_carried = integer.fused_reverse_add_asm_interleave();

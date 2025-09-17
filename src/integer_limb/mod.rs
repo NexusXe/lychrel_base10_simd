@@ -572,19 +572,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
-    #[allow(unused)]
-    fn reverse_interleave_x2(lhs: &mut LimbVec, rhs: &mut LimbVec) {
-        // logically these are just bitwise ANDs; however, since the dst register
-        // is the same as a src register, specifically VPXOR can have a much lower
-        // latency and (somehow) doesn't use an FPU pipe
-        // (this is based on data from Zen 4, but it is likely still true)
-        let lhs_output = *lhs ^ rhs.reverse() << 4;
-        let rhs_output = *rhs ^ lhs.reverse() << 4;
-
-        *lhs = lhs_output;
-        *rhs = rhs_output;
-    }
-
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
         // instead of reversing into a seperate vector, reverse and pack into the original limb
