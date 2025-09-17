@@ -655,10 +655,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     if likely((carry_mask != 0) || forward_carry) {
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
-                        // branch, but nothing relies on `ever_carried` for a while
-                        if carry_mask != 0 {
-                            ever_carried = true;
-                        }
+                        ever_carried = true;
 
                         limb.0 = _mm512_mask_sub_epi8(
                             limb.0.into(),
@@ -685,8 +682,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             } else if carry_mask == 0 {
                                 break;
                             }
-
-                            ever_carried = true;
 
                             limb.0 = _mm512_mask_sub_epi8(
                                 limb.0.into(),
@@ -759,8 +754,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             #[cfg(not(debug_assertions))]
             unsafe {
                 // for some reason an overflow check is happening on this addition
-                let ptr = rev_ptr as usize;
-                *(ptr.unchecked_add(LV_LEN) as *mut u8) = 1; // do the math manually with unchecked addition to remove an overflow check branch 
+                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1; // do the math manually with unchecked addition to remove an overflow check branch 
             }
         } else {
             self.0.pop();

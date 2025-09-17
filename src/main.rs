@@ -443,7 +443,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 {
                                     cold_path();
                                     eprintln!(
-                                        "It is possible that the current machine uses a different word size than the machine that generated this checkpoint."
+                                        "It is possible that the current machine uses a different word size than the machine that generated this checkpoint.\nRead vector size: {read_checkpoint_vector_size:} bytes\nCurrent vector size: {LV_LEN:} bytes",
                                     )
                                 }
                                 std::process::exit(1)
