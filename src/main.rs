@@ -154,7 +154,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
-    let _ = affinity::set_thread_affinity([5]);
+    let _ = affinity::set_thread_affinity([22]);
 
     #[cfg(all(
         target_pointer_width = "64",
@@ -347,7 +347,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iteration_handle = thread::spawn(move || {
         #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
-        let _ = affinity::set_thread_affinity([4]);
+        let _ = affinity::set_thread_affinity([23]);
 
         iterate(starting_iteration..limit, initial_value, Some(tx))
     });
