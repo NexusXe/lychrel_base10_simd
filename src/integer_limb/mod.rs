@@ -688,12 +688,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             let carry_mask =
                                 _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
-                            if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
-                                overflowed = true;
-                            } else if carry_mask == 0 {
-                                break;
-                            }
-
                             limb.0 = _mm512_mask_sub_epi8(
                                 limb.0.into(),
                                 carry_mask,
@@ -709,6 +703,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 _mm512_set1_epi8(1),
                             )
                             .into();
+
+                            if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                                overflowed = true;
+                            } else if carry_mask == 0 {
+                                break;
+                            }
                         }
                     }
                 }
