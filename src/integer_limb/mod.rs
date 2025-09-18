@@ -647,6 +647,17 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     //let carry_mask = _mm512_cmpge_epu8_mask(reversed_limb.into(),carrying_minimums.into());
 
                     limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
+
+                    for result in limb.0.as_array() {
+                        if *result > 18 {
+                            #[cfg(debug_assertions)]
+                            unreachable!("Got impossible addition result");
+
+                            #[cfg(not(debug_assertions))]
+                            unreachable_unchecked();
+                        }
+                    }
+
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
