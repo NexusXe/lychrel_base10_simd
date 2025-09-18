@@ -593,7 +593,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         let skip_len = LV_LEN - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
 
         let limbs_ptr = self.0.as_mut_ptr() as *mut LimbVec;
-        let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs - 1).0 } as *mut LimbVec;
+        let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0 }
+            as *mut LimbVec;
 
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
@@ -602,14 +603,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
-                // shift these as qwords since it's faster
 
+                // shift these as qwords since it's faster
                 let lhs_output = *lhs
-                    ^ transmute::<WideVec, LimbVec>(
+                    | transmute::<WideVec, LimbVec>(
                         transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
-                    ); // logically OR, but shared-operand XOR doesn't use pipes (somehow)
+                    );
                 let rhs_output = *rhs
-                    ^ transmute::<WideVec, LimbVec>(
+                    | transmute::<WideVec, LimbVec>(
                         transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
                     );
                 *lhs = lhs_output;
@@ -643,9 +644,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
-                    //let carrying_minimums: LimbVec = LimbVec::splat(10) - limb.0;
-                    //let carry_mask = _mm512_cmpge_epu8_mask(reversed_limb.into(),carrying_minimums.into());
-
                     limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
 
                     for result in limb.0.as_array() {

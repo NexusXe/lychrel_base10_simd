@@ -522,9 +522,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if found_palindrome { "Did" } else { "Did not" },
         last_iteration,
         if found_palindrome {
-            &format! {": {:}", end_integer}
+            format! {": {:}", &end_integer}
         } else {
-            "."
+            ".".to_string()
         }
     );
 
