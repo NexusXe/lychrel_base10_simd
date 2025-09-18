@@ -481,7 +481,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             use std::intrinsics::{fdiv_fast, fmul_fast};
             let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
             println!(
-                "Current data rate: {:.2} GiBps ({:.3} MegaLimbs / sec)",
+                "Current stats:\n{:.2} GiBps\n{:.3} million limbs / sec\n{:.2} billion digits / sec\n",
                 unsafe {
                     fdiv_fast(
                         tetrahexacontabytes_per_second,
@@ -489,6 +489,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 },
                 unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
+                unsafe { fdiv_fast(tetrahexacontabytes_per_second, 15625000f64) },
             );
             // current rate = 64(num_limbs) / 1073741824
         }
