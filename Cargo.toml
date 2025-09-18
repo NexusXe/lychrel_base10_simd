@@ -44,7 +44,7 @@ overflow-checks = false
 codegen-units = 1
 lto = "fat"
 panic = "abort"
-rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
+rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native", "-C", "linker-plugin-lto"]
 
 [profile.release.build-override]
 strip = true
