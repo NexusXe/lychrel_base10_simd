@@ -119,12 +119,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
-
-    let compile_datetime = compile_time::datetime_str!();
-    let rustc_version = compile_time::rustc_version_str!();
-
-    println!(
-        "lychrel_base10_simd compiled with {rustc_version} on {compile_datetime}\n
+    println!("
+SIMD Lychrel Number Search
     Compile options:
     Overall SIMD Width: {} bits
     Limb Vector Scalar: {}
@@ -149,9 +145,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             ""
         }
     );
-
-    #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
-    let _ = affinity::set_thread_affinity([22]);
 
     #[cfg(all(
         target_pointer_width = "64",
@@ -211,7 +204,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         target_family = "wasm",
         feature = "global-alloc"
     ))]
-    let mut initial_value: Option<Integer<Global>> = None;
+    let mut initial_value: Integer<Global> = Integer(Vec::new());
+
 
     for (idx, arg) in args.iter().skip(1).enumerate() {
         if skip_next_arg {
@@ -468,8 +462,6 @@ Run selection:
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
     let iteration_handle = thread::spawn(move || {
-        #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
-        let _ = affinity::set_thread_affinity([23]);
 
         iterate(starting_iteration..stop_at, initial_value, Some(tx))
     });
@@ -593,13 +585,19 @@ Run selection:
                     }
                 }
             }
-            print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64,);
+            print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64);
+            
+            #[cfg(target_family = "windows")]
             if let Some(usage) = memory_stats::memory_stats() {
                 print!("{:} KiB physical memory, ", usage.physical_mem / 1024);
                 println!("{:} KiB virtual memory.", usage.virtual_mem / 1024);
             } else {
                 println!("{:} KiB of memory", (num_limbs * LV_BYTES) / 1024);
             }
+
+            #[cfg(not(target_family = "windows"))]
+            println!("{:} KiB of memory", (num_limbs * LV_BYTES) / 1024);
+
             use std::intrinsics::{fdiv_fast, fmul_fast};
             let tetrahexacontabytes_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
             println!(
