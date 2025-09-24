@@ -207,7 +207,7 @@ SIMD Lychrel Number Search
     let mut initial_value: Integer<Global> = Integer(Vec::new());
 
 
-    for (idx, arg) in args.iter().skip(1).enumerate() {
+    for (idx, arg) in args.iter().enumerate().skip(1) {
         if skip_next_arg {
             skip_next_arg = false;
             continue;
@@ -248,8 +248,8 @@ SIMD Lychrel Number Search
             "--start-at" => {
                 skip_next_arg = true;
                 start_at = match args.get(idx + 1) {
-                    Some(start_at) => match start_at.parse::<usize>() {
-                        Ok(start_at) => Some(start_at),
+                    Some(start_at_str) => match start_at_str.parse::<usize>() {
+                        Ok(start_at_val) => Some(start_at_val),
                         Err(_) => {
                             eprintln!("Please specify a valid start value");
                             std::process::exit(1);
