@@ -19,17 +19,11 @@ use lychrel_base10_simd::integer_limb::{
 use std::alloc::{Allocator, Global};
 use std::any::type_name;
 use std::hint::{cold_path, likely, unlikely};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Instant;
-
-#[cfg(target_family = "windows")]
-use windows::Win32::System::{
-    Console::{CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo},
-    Threading::GetCurrentProcess,
-};
 
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
@@ -119,6 +113,9 @@ fn iterate<T: std::alloc::Allocator + Clone + Copy>(
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     const INITIAL_SEED: u128 = 196;
     const LIMIT_SHORT: usize = 603_567;
+    const LIMIT_LONG_BENCH: usize = LIMIT_SHORT * 2;
+    const LIMIT_PROFILING: usize = LIMIT_SHORT * 5;
+
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
@@ -170,14 +167,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))]
     let allocator = Global;
 
-    let initial_limb = Limb::new_from_value(INITIAL_SEED);
-    let mut internal_vec: Vec<Limb, _> = Vec::new_in(allocator);
-
-    internal_vec.push(initial_limb);
-
-    let mut initial_value = Integer(internal_vec);
     let mut starting_iteration: usize = 1;
-
     let args: Vec<String> = std::env::args().collect();
 
     const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
@@ -187,20 +177,216 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => DEFAULT_CHECKPOINT_DIR.to_string(),
     };
 
-    if args.contains(&"--start-at".to_string())
-        || (!args.contains(&"--no-checkpoint".to_string())
-            && !args.contains(&"--bench".to_string())
-            && !args.contains(&"--long-bench".to_string())
-            && !args.contains(&"--short".to_string()))
-    {
-        let checkpoint_path = Path::new(&checkpoint_dir);
+    enum RunType {
+        Bench,
+        LongBench,
+        Short,
+        Long,
+    }
 
-        match std::fs::read_dir(checkpoint_path) {
-            Ok(entries) => {
-                println!(
-                    "Using pre-existing checkpoints folder at {}",
-                    checkpoint_path.display()
-                );
+    let mut help: bool = false;
+    let mut short_help: bool = false;
+    let mut version: bool = false;
+    let mut skip_next_arg: bool = false;
+
+    let mut start_at: Option<usize> = None;
+
+    let mut stop_at: Option<usize> = None;
+    let mut checkpoint_path_str = checkpoint_dir.clone();
+    let mut seed_number: u128 = INITIAL_SEED;
+
+    let mut no_checkpoint: bool = false;
+    let mut write_yield = false;
+    let mut run_type = RunType::Long;
+
+    #[cfg(all(
+        target_pointer_width = "64",
+        not(target_family = "wasm"),
+        not(feature = "global-alloc")
+    ))]
+    let mut initial_value: Integer<HugePageAllocator> = Integer(Vec::new_in(allocator));
+
+    #[cfg(any(
+        not(target_pointer_width = "64"),
+        target_family = "wasm",
+        feature = "global-alloc"
+    ))]
+    let mut initial_value: Option<Integer<Global>> = None;
+
+    for (idx, arg) in args.iter().skip(1).enumerate() {
+        if skip_next_arg {
+            skip_next_arg = false;
+            continue;
+        }
+
+        match arg.as_str() {
+            "--help" | "-h" => {
+                help = true;
+                break;
+            }
+            "--version" => version = true,
+            "--seed" => {
+                skip_next_arg = true;
+                seed_number = match args.get(idx + 1) {
+                    Some(seed) => match seed.parse::<u128>() {
+                        Ok(seed) => seed,
+                        Err(_) => {
+                            eprintln!("Please specify a valid seed number");
+                            std::process::exit(1);
+                        }
+                    },
+                    None => {
+                        eprintln!("Please specify a seed number");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--checkpoint-dir" => {
+                skip_next_arg = true;
+                checkpoint_path_str = match args.get(idx + 1) {
+                    Some(path) => path.to_string(),
+                    None => {
+                        eprintln!("Please specify a checkpoint directory path");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--start-at" => {
+                skip_next_arg = true;
+                start_at = match args.get(idx + 1) {
+                    Some(start_at) => match start_at.parse::<usize>() {
+                        Ok(start_at) => Some(start_at),
+                        Err(_) => {
+                            eprintln!("Please specify a valid start value");
+                            std::process::exit(1);
+                        }
+                    },
+                    None => {
+                        eprintln!("Please specify a start value");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--stop-at" => {
+                skip_next_arg = true;
+                stop_at = match args.get(idx + 1) {
+                    Some(stop_at_str) => match stop_at_str.parse::<usize>() {
+                        Ok(stop_at_val) => Some(if stop_at_val == 0 {
+                            LIMIT
+                        } else {
+                            stop_at_val + 1
+                        }),
+                        Err(_) => {
+                            eprintln!("Please specify a valid stop value");
+                            std::process::exit(1);
+                        }
+                    },
+                    None => {
+                        eprintln!("Please specify a stop value");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--no-checkpoint" => {
+                no_checkpoint = true;
+            }
+            "--yield" => {
+                write_yield = true;
+            }
+            "--bench" => {
+                run_type = RunType::Bench;
+            }
+            "--short" => {
+                run_type = RunType::Short;
+            }
+            "--long-bench" => {
+                run_type = RunType::LongBench;
+            }
+            "--long" => {
+                run_type = RunType::Long;
+            }
+
+            _ => {
+                eprintln!("unrecognized argument: {arg}");
+                short_help = true;
+            }
+        }
+    }
+
+    if help {
+        println!("lychrel_base10_simd usage: lychrel_base10_simd [options]
+General options:
+--help              show this help
+--version           show version
+--seed <seed>       specify the base number to iterate over (default: {INITIAL_SEED:})
+--checkpoint-dir    specify the directory of checkpoint files (default: {DEFAULT_CHECKPOINT_DIR:})
+--start-at          specify starting checkpoint iteration number (default: second to last if available)
+--stop-at           specify iteration target number (default: 0)
+--no-checkpoint     don't start at a checkpoint, start at iteration 1 with seed instead
+--yield             write output to file regardless of whether a palindrome was found
+
+Run selection:
+--bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_SHORT}`
+--bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_LONG_BENCH}`
+--short             Run profiling run; alias for `--stop-at {LIMIT_PROFILING}`
+--long              Run long run; alias for `--stop-at 0` (set by default)
+");
+        std::process::exit(0);
+    }
+
+    if short_help {
+        println!("Usage: lychrel_base10_simd [options]");
+        std::process::exit(0);
+    }
+
+    if version {
+        std::process::exit(0);
+    }
+
+    initial_value.0.push(Limb::new_from_value(seed_number));
+
+    let run_type_stop_at: usize;
+    match run_type {
+        RunType::Bench => {
+            println!("Performing benchmark run.");
+            start_at = None;
+            no_checkpoint = true;
+            run_type_stop_at = LIMIT_SHORT;
+        }
+        RunType::LongBench => {
+            println!("Performing long benchmark run.");
+            start_at = None;
+            no_checkpoint = true;
+            run_type_stop_at = LIMIT_LONG_BENCH;
+        }
+        RunType::Short => {
+            println!("Performing profiling run.");
+            if start_at.is_none() {
+                no_checkpoint = true;
+            }
+            run_type_stop_at = LIMIT_PROFILING;
+        }
+        RunType::Long => {
+            no_checkpoint ^= false;
+            run_type_stop_at = LIMIT;
+        }
+    }
+
+    let stop_at: usize = match stop_at {
+        Some(stop_at) => stop_at,
+        None => run_type_stop_at,
+    };
+
+    let checkpoint_path = Path::new(&checkpoint_path_str);
+    match std::fs::read_dir(checkpoint_path) {
+        Ok(entries) => {
+            println!(
+                "Using pre-existing checkpoints folder at {}",
+                checkpoint_path.display()
+            );
+            if no_checkpoint {
+                println!("Not starting from checkpoint.");
+            } else {
                 // since the folder exists, get the `Path`s of all files inside of it
                 // filter out those that are irrelevant to our current seed
                 let mut checkpoint_files: Vec<std::path::PathBuf> = entries
@@ -209,7 +395,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|path| {
                         path.file_name()
                             .and_then(|name| name.to_str())
-                            .is_some_and(|s| s.ends_with(&format!("{INITIAL_SEED:}_checkpoint")))
+                            .is_some_and(|s| s.ends_with(&format!("{seed_number:}_checkpoint")))
                     })
                     .collect();
 
@@ -221,26 +407,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap()
                 });
 
-                let checkpoint_path: Option<PathBuf> = if args.contains(&"--start-at".to_string()) {
-                    // get the arg after "--start-at"
-                    let start_at_index = match args.iter().position(|arg| arg == "--start-at") {
-                        Some(index) => index,
-                        None => {
-                            eprintln!("Please specify a checkpoint index to start at");
-                            std::process::exit(1);
-                        }
-                    };
-                    let start_at_value = match args[start_at_index + 1].parse::<usize>() {
-                        Ok(value) => value,
-                        Err(_) => {
-                            eprintln!("Please specify a valid checkpoint index to start at");
-                            std::process::exit(1);
-                        }
-                    };
-
-                    // find the checkpoint that starts with `start_at_value`
-                    Some(
-                        match checkpoint_files.into_iter().find(|path| {
+                match start_at {
+                    Some(start_at_value) => {
+                        let checkpoint_path = match checkpoint_files.into_iter().find(|path| {
                             path.file_name()
                                 .and_then(|name| name.to_str())
                                 .and_then(|s| s.split('.').next())
@@ -249,99 +418,52 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }) {
                             Some(path) => path,
                             None => {
-                                eprintln!("No checkpoint found with index {start_at_value:}");
+                                eprintln!(
+                                    "No checkpoint found with index {start_at_value:} in {}",
+                                    checkpoint_path.canonicalize()?.display()
+                                );
                                 std::process::exit(1);
                             }
-                        },
-                    )
-                } else if checkpoint_files.len() >= 2 {
-                    // use the second to last checkpoint
-                    Some(checkpoint_files[checkpoint_files.len() - 2].clone())
-                } else {
-                    None
-                };
-
-                match checkpoint_path {
-                    Some(used_checkpoint_path) => {
-                        let used_checkpoint_iteration = used_checkpoint_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .and_then(|s| s.split('.').next())
-                            .map(|s| s.parse::<usize>())
-                            .unwrap()?;
-                        let used_checkpoint = std::fs::read(used_checkpoint_path)?;
-                        let checkpoint =
-                            Checkpoint::new(used_checkpoint_iteration, used_checkpoint);
-                        (initial_value, starting_iteration) =
-                            Integer::from_checkpoint(checkpoint, allocator);
-                        println!(
-                            "Starting from checkpoint at iteration {starting_iteration:}\nCheckpoint has {:} limbs and {:} digits.",
-                            initial_value.0.len(),
-                            initial_value.len()
-                        );
-                        starting_iteration += 1;
+                        };
+                        let checkpoint_data = std::fs::read(checkpoint_path)?;
+                        let checkpoint = Checkpoint::new(start_at_value, checkpoint_data);
+                        (initial_value, _) = Integer::from_checkpoint(checkpoint, allocator);
+                        starting_iteration = start_at_value + 1;
                     }
 
                     None => {
-                        eprintln!("No valid checkpoints to start from found.")
+                        if checkpoint_files.len() >= 2 {
+                            // use the second to last checkpoint
+                            let checkpoint_path = &checkpoint_files[checkpoint_files.len() - 2];
+                            let checkpoint_data = std::fs::read(checkpoint_path)?;
+                            let checkpoint_iteration = checkpoint_path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .and_then(|s| s.split('.').next())
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap();
+                            let checkpoint = Checkpoint::new(checkpoint_iteration, checkpoint_data);
+                            (initial_value, _) = Integer::from_checkpoint(checkpoint, allocator);
+                            starting_iteration = checkpoint_iteration + 1;
+                        }
                     }
                 }
             }
-            Err(_) => {
-                std::fs::create_dir(checkpoint_path)?;
-                eprintln!("Created new local checkpoints folder in local directory");
-            }
         }
-    } else {
-        println!("Not starting from checkpoint.");
+        Err(_) => {
+            match std::fs::create_dir(checkpoint_path) {
+                Ok(_) => eprintln!("Created new local checkpoints folder in local directory"),
+                Err(err) => {
+                    eprintln!("Error creating local checkpoints folder: {err}");
+                    std::process::exit(1);
+                }
+            };
+        }
     }
 
-    let limit: usize = if args.contains(&"--short".to_string()) {
-        eprintln!("Performing short run.");
-        LIMIT_SHORT * 5
-    } else if args.contains(&"--bench".to_string()) {
-        eprintln!("Performing benchmark run.");
-        LIMIT_SHORT
-    } else if args.contains(&"--long-bench".to_string()) {
-        eprintln!("Performing long benchmark run.");
-        LIMIT_SHORT * 2
-    } else if args.contains(&"--stop-at".to_string()) {
-        let stop_at_index = args.iter().position(|arg| arg == "--stop-at").unwrap();
-        let stop_at_value = match args
-            .get(stop_at_index + 1)
-            .expect("Please specify an iteration index to stop at")
-            .parse::<usize>()
-        {
-            Ok(value) => value,
-            Err(_) => {
-                eprintln!("Please specify a valid iteration index to stop at");
-                std::process::exit(1);
-            }
-        };
-        eprintln!("Stopping at iteration {stop_at_value:}");
-        stop_at_value + 1
-    } else {
-        LIMIT
-    };
+    println!("limit: {stop_at:}");
 
-    println!("limit: {limit:}");
-    let console_width = {
-        #[cfg(target_family = "windows")]
-        {
-            let mut console_info = CONSOLE_SCREEN_BUFFER_INFO::default();
-            let output =
-                unsafe { GetConsoleScreenBufferInfo(GetCurrentProcess(), &mut console_info) };
-            match output {
-                Ok(_) => (console_info.dwSize.X).min(255),
-                Err(_) => 63,
-            }
-        }
-
-        #[cfg(not(target_family = "windows"))]
-        63 // TODO: linux support
-    };
-
-    println!("{}", "-".repeat(console_width as usize));
+    println!("{}", "-".repeat(32));
 
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
@@ -349,7 +471,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(all(not(feature = "no-affinity"), not(debug_assertions)))]
         let _ = affinity::set_thread_affinity([23]);
 
-        iterate(starting_iteration..limit, initial_value, Some(tx))
+        iterate(starting_iteration..stop_at, initial_value, Some(tx))
     });
 
     let mut step_time = Instant::now();
@@ -507,7 +629,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (last_iteration, start_time, end_integer) =
         (result.last_iteration, result.start_time, result.end_integer);
 
-    let found_palindrome: bool = last_iteration < limit;
+    let found_palindrome: bool = last_iteration < stop_at;
 
     let elapsed_time = start_time.elapsed();
 
@@ -530,7 +652,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let file_prefix = if found_palindrome { "FOUND_" } else { "yield_" };
 
-    if unlikely(found_palindrome) || args.contains(&"--yield".to_string()) {
+    if unlikely(found_palindrome) || write_yield {
         println!("Writing packed found palindrome to \"{file_prefix}{last_iteration}.txt\"");
         std::fs::write(
             format!("{file_prefix}{last_iteration}.txt"),

@@ -984,6 +984,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
     }
 
+    #[must_use]
     #[inline]
     pub fn from_checkpoint(input: Checkpoint, allocator: T) -> (Integer<T>, usize) {
         let chopped_data = Integer::<T>::chop(input.integer).unwrap();
