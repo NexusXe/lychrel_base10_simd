@@ -1,13 +1,12 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-Zshare-generics=y", "-C", "linker-plugin-lto"]
-
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y"]
 [unstable]
 build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
 # build-std-features = ["panic_immediate_abort"]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Zunstable-options -Cpanic=immediate-abort", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y"]
+rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Zunstable-options -Cpanic=immediate-abort", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static,-vzeroupper", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y"]
 linker = "rust-lld.exe"
 
 [target.x86_64-linux-unknown-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Zunstable-options -Cpanic=immediate-abort", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y"]
+rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Zunstable-options -Cpanic=immediate-abort", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static,-vzeroupper", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y"]
