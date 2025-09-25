@@ -106,10 +106,10 @@ const fn assert_good_vec_sizes() {
 
 const _: () = assert_good_vec_sizes();
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(not(target_family = "wasm"), not(feature = "global-alloc")))]
 mod huge_page_alloc;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(not(target_family = "wasm"), not(feature = "global-alloc")))]
 #[allow(unused_imports)]
 pub use huge_page_alloc::*;
 
