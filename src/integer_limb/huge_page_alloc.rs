@@ -26,6 +26,12 @@ use windows::{
 #[derive(Clone, Copy)]
 pub struct HugePageAllocator;
 
+#[cfg(target_family = "unix")]
+use std::num::NonZeroUsize;
+
+#[cfg(target_family = "unix")]
+static mut PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4 * 1024).unwrap();
+
 impl HugePageAllocator {
     #[cfg(target_os = "windows")]
     fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
@@ -82,6 +88,14 @@ impl HugePageAllocator {
 
     #[cfg(target_family = "unix")]
     pub fn init() -> Result<Self, Box<dyn std::error::Error>> {
+        unsafe {
+            let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+            if std::hint::unlikely(page_size == -1) {
+                return Err(Box::new(std::io::Error::last_os_error()));
+            } else if page_size != 0 {
+                PAGE_SIZE = std::num::NonZeroUsize::new(page_size as usize).unwrap_unchecked();
+            }
+        }
         Ok(Self)
     }
 
@@ -191,17 +205,17 @@ unsafe impl Allocator for HugePageAllocator {
 
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
         use libc::{posix_madvise, free, aligned_alloc, MADV_HUGEPAGE};
-        const TWO_MEGABYTE_PAGE: usize = 2 * 1024 * 1024;
+        static LARGE_PAGE: NonZeroUsize = NonZeroUsize::new(unsafe { PAGE_SIZE.get() } * 1024).unwrap();
 
-        let alignment = layout.align().div_ceil(TWO_MEGABYTE_PAGE) * TWO_MEGABYTE_PAGE;
-        let size = layout.size().div_ceil(TWO_MEGABYTE_PAGE) * TWO_MEGABYTE_PAGE;
+        let alignment = layout.align().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
+        let size = layout.size().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
         let ptr = unsafe { aligned_alloc(alignment, size) };
 
         if ptr.is_null() {
             return Err(AllocError);
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(target_family = "unix")]
         {
             let result = unsafe { posix_madvise(ptr, size, MADV_HUGEPAGE) };
             if result != 0 {
