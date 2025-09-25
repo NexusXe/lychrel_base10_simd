@@ -23,7 +23,7 @@ windows = { version = "0", features = [
 memory-stats = "1.2"
 
 [target.'cfg(target_family = "unix")'.dependencies]
-libc = {version = "0.2"}
+libc = {version = "0.2", features = ["extra_traits"]}
 
 [dev-dependencies]
 rand = "0.9"
@@ -32,7 +32,7 @@ rand = "0.9"
 embed-resource = "3"
 
 [profile.release]
-# strip = true
+strip = "debuginfo"
 opt-level = 3
 debug = false
 debug-assertions = false
@@ -43,7 +43,7 @@ panic = "abort"
 rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 
 [profile.release.build-override]
-# strip = true
+strip = "debuginfo"
 opt-level = 3
 debug = false
 debug-assertions = false
