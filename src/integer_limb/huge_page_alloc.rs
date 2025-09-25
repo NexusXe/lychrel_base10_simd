@@ -11,11 +11,10 @@ use windows::{
         },
         System::{
             Memory::{
-                GetLargePageMinimum, MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT,
-                MEM_EXTENDED_PARAMETER, MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1,
-                MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE,
-                MemExtendedParameterAddressRequirements, MemExtendedParameterAttributeFlags,
-                PAGE_READWRITE, VirtualAlloc2, VirtualFree,
+                GetLargePageMinimum, MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER,
+                MEM_EXTENDED_PARAMETER_0, MEM_EXTENDED_PARAMETER_1, MEM_LARGE_PAGES, MEM_RELEASE,
+                MEM_RESERVE, MemExtendedParameterAddressRequirements,
+                MemExtendedParameterAttributeFlags, PAGE_READWRITE, VirtualAlloc2, VirtualFree,
             },
             Threading::{GetCurrentProcess, OpenProcessToken},
         },
@@ -133,8 +132,7 @@ unsafe impl Allocator for HugePageAllocator {
             let alignment = (layout.align().div_ceil(large_page_size)) * large_page_size;
 
             #[cfg(feature = "1g-pages")]
-            let alignment =
-                (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
+            let alignment = (layout.align().div_ceil(HUGE_PAGE_SIZE_BYTES)) * HUGE_PAGE_SIZE_BYTES;
 
             let mut requirements = MEM_ADDRESS_REQUIREMENTS {
                 LowestStartingAddress: zeroed(),
@@ -204,8 +202,9 @@ unsafe impl Allocator for HugePageAllocator {
     }
 
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
-        use libc::{posix_madvise, free, aligned_alloc, MADV_HUGEPAGE};
-        static LARGE_PAGE: NonZeroUsize = NonZeroUsize::new(unsafe { PAGE_SIZE.get() } * 1024).unwrap();
+        use libc::{MADV_HUGEPAGE, aligned_alloc, free, posix_madvise};
+        static LARGE_PAGE: NonZeroUsize =
+            NonZeroUsize::new(unsafe { PAGE_SIZE.get() } * 1024).unwrap();
 
         let alignment = layout.align().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
         let size = layout.size().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
@@ -223,7 +222,8 @@ unsafe impl Allocator for HugePageAllocator {
                 return Err(AllocError);
             }
         }
-        if let Some(output) = ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr as *mut u8, size)) {
+        if let Some(output) = ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr as *mut u8, size))
+        {
             Ok(output)
         } else {
             Err(AllocError)

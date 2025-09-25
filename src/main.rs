@@ -119,7 +119,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
-    println!("
+    println!(
+        "
 SIMD Lychrel Number Search
     Compile options:
     Overall SIMD Width: {} bits
@@ -205,7 +206,6 @@ SIMD Lychrel Number Search
         feature = "global-alloc"
     ))]
     let mut initial_value: Integer<Global> = Integer(Vec::new());
-
 
     for (idx, arg) in args.iter().enumerate().skip(1) {
         if skip_next_arg {
@@ -461,10 +461,8 @@ Run selection:
 
     let (tx, rx) = mpsc::channel::<StatusReport>();
 
-    let iteration_handle = thread::spawn(move || {
-
-        iterate(starting_iteration..stop_at, initial_value, Some(tx))
-    });
+    let iteration_handle =
+        thread::spawn(move || iterate(starting_iteration..stop_at, initial_value, Some(tx)));
 
     let mut step_time = Instant::now();
 
@@ -586,7 +584,7 @@ Run selection:
                 }
             }
             print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64);
-            
+
             #[cfg(target_family = "windows")]
             if let Some(usage) = memory_stats::memory_stats() {
                 print!("{:} KiB physical memory, ", usage.physical_mem / 1024);
