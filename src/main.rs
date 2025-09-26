@@ -455,6 +455,10 @@ Run selection:
         }
     }
 
+    if starting_iteration > 1 {
+        println!("Starting at iteration {starting_iteration:}");
+    }
+
     println!("limit: {stop_at:}");
 
     println!("{}", "-".repeat(32));
