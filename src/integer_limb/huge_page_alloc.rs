@@ -22,6 +22,9 @@ use windows::{
     core::{Result as WinResult, w},
 };
 
+#[cfg(target_os = "windows")]
+use std::mem::zeroed;
+
 #[derive(Clone, Copy)]
 pub struct HugePageAllocator;
 
@@ -201,6 +204,7 @@ unsafe impl Allocator for HugePageAllocator {
         }
     }
 
+    #[cfg(target_family = "unix")]
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
         use libc::{MADV_HUGEPAGE, aligned_alloc, free, posix_madvise};
         static LARGE_PAGE: NonZeroUsize =
@@ -214,7 +218,6 @@ unsafe impl Allocator for HugePageAllocator {
             return Err(AllocError);
         }
 
-        #[cfg(target_family = "unix")]
         {
             let result = unsafe { posix_madvise(ptr, size, MADV_HUGEPAGE) };
             if result != 0 {
@@ -230,6 +233,7 @@ unsafe impl Allocator for HugePageAllocator {
         }
     }
 
+    #[cfg(target_family = "unix")]
     unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, _layout: Layout) {
         unsafe { libc::free(ptr.as_ptr() as *mut libc::c_void) };
     }
