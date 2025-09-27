@@ -124,12 +124,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             "run" => Some(ExecType::Run),
             "read" => Some(ExecType::Read),
             _ => {
-                eprintln!("Unexpected run type argument: {arg}");
+                eprintln!("Unexpected run type argument: {arg}\n");
                 None
             }
         },
         None => {
-            eprintln!("Please specify a run type");
+            eprintln!("Please specify a run type\n");
             None
         }
     };
