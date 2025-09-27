@@ -45,12 +45,12 @@ impl HugePageAllocator {
             OpenProcessToken(
                 process_handle,
                 TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
-                &mut token_handle,
+                &raw mut token_handle,
             )?;
 
             let mut luid: LUID = zeroed();
 
-            LookupPrivilegeValueW(None, w!("SeLockMemoryPrivilege"), &mut luid)?;
+            LookupPrivilegeValueW(None, w!("SeLockMemoryPrivilege"), &raw mut luid)?;
 
             let token_privileges = TOKEN_PRIVILEGES {
                 PrivilegeCount: 1,
@@ -63,7 +63,7 @@ impl HugePageAllocator {
             AdjustTokenPrivileges(
                 token_handle,
                 false,
-                Some(&token_privileges),
+                Some(&raw const token_privileges),
                 size_of::<TOKEN_PRIVILEGES>() as u32,
                 None,
                 None,
@@ -148,8 +148,7 @@ unsafe impl Allocator for HugePageAllocator {
                     _bitfield: MemExtendedParameterAddressRequirements.0 as u64,
                 },
                 Anonymous2: MEM_EXTENDED_PARAMETER_1 {
-                    Pointer: &mut requirements as *mut MEM_ADDRESS_REQUIREMENTS
-                        as *mut std::os::raw::c_void,
+                    Pointer: (&raw mut requirements).cast::<std::os::raw::c_void>(),
                 },
             };
 
@@ -186,7 +185,7 @@ unsafe impl Allocator for HugePageAllocator {
                 return Err(AllocError);
             }
 
-            let slice = std::slice::from_raw_parts_mut(ptr as *mut u8, aligned_size);
+            let slice: &mut [u8] = std::slice::from_raw_parts_mut(ptr.cast(), aligned_size);
 
             Ok(ptr::NonNull::new(slice).unwrap())
         }
@@ -195,7 +194,7 @@ unsafe impl Allocator for HugePageAllocator {
     #[cfg(target_os = "windows")]
     unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, _layout: Layout) {
         //eprintln!("Deallocating {:} bytes", _layout.size());
-        let result = unsafe { VirtualFree(ptr.as_ptr() as *mut _, 0, MEM_RELEASE) };
+        let result = unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
         match result {
             Ok(()) => {}
             Err(error) => {

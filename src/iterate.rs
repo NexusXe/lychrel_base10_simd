@@ -4,26 +4,26 @@ use std::hint::{cold_path, likely, unlikely};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-pub(crate) struct IterationResult<T: Allocator + Clone + Copy> {
+pub struct IterationResult<T: Allocator + Clone + Copy> {
     pub(crate) last_iteration: usize,
     pub(crate) start_time: Instant,
     pub(crate) end_integer: Integer<T>,
 }
 
-pub(crate) struct StatusReport {
+pub struct StatusReport {
     pub(crate) iteration: usize,
     pub(crate) current_value: Option<Integer<Global>>,
 }
 
-pub(crate) const LOG_FREQUENCY_EXP: usize = 14;
+pub const LOG_FREQUENCY_EXP: usize = 14;
 
-pub(crate) const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
+pub const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
-pub(crate) fn iterate<T: std::alloc::Allocator + Clone + Copy>(
+pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,
     starting_integer: Integer<T>,
-    tx: Option<Sender<StatusReport>>,
+    tx: Option<&Sender<StatusReport>>,
 ) -> IterationResult<T> {
     let mut current_iteration = starting_integer;
 

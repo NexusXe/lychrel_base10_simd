@@ -114,6 +114,7 @@ mod huge_page_alloc;
 pub use huge_page_alloc::*;
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
+///
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
 #[derive(Clone, Copy)]
@@ -182,10 +183,12 @@ impl const From<LimbVec> for Limb {
 
 impl Limb {
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self(LimbVec::splat(0))
     }
 
+    #[must_use]
     pub fn new_from_value(value: u128) -> Self {
         let input_digits = value.to_string();
         let mut digits = LimbVec::splat(0);
@@ -211,7 +214,7 @@ impl Limb {
 
     #[inline]
     fn reverse(self) -> Self {
-        Limb(self.0.reverse())
+        Self(self.0.reverse())
     }
 
     #[inline]
@@ -232,13 +235,13 @@ impl Limb {
         unsafe {
             let other_u64: WideVec = transmute(other.0);
             let other_shifted: LimbVec = transmute(other_u64 << 4);
-            Limb(self.0 ^ other_shifted)
+            Self(self.0 ^ other_shifted)
         }
     }
 
     #[inline]
     fn unpack(&self) -> (Self, Self) {
-        (Limb((self.0 << 4) >> 4), Limb(self.0 >> 4))
+        (Self((self.0 << 4) >> 4), Self(self.0 >> 4))
     }
 
     #[inline]
@@ -279,7 +282,7 @@ impl std::ops::Add for Limb {
             let input_64: WideVec = transmute(self.0);
             let other_64: WideVec = transmute(other.0);
             let output_64: WideVec = input_64 + other_64;
-            Limb(transmute::<WideVec, LimbVec>(output_64))
+            Self(transmute::<WideVec, LimbVec>(output_64))
         }
     }
 }
@@ -319,10 +322,12 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
+    #[must_use]
     pub const fn new(iteration: usize, integer: Vec<u8>) -> Self {
         Self { iteration, integer }
     }
 
+    #[must_use]
     pub fn data(self) -> (usize, Vec<u8>) {
         (self.iteration, self.integer)
     }
@@ -402,7 +407,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let skip_len = LV_LEN - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
 
-        let limbs_ptr = self.0.as_mut_ptr() as *mut LimbVec;
+        let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
         let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0 }
             as *mut LimbVec;
 
@@ -438,7 +443,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .take_while(|(idx, _)| idx < &total_limbs)
         {
             unsafe {
-                let limb_ptr = &limb.0 as *const LimbVec;
+                let limb_ptr = &raw const limb.0;
 
                 #[cfg(debug_assertions)]
                 let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
@@ -486,7 +491,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                         limb.0 = _mm512_mask_add_epi8(
                             limb.0.into(),
-                            (carry_mask << 1) | forward_carry as __mmask64, // do a round of carry propogation AND deal with a forward carry. absolute cinema
+                            (carry_mask << 1) | __mmask64::from(forward_carry), // do a round of carry propogation AND deal with a forward carry. absolute cinema
                             limb.0.into(),
                             _mm512_set1_epi8(1),
                         )
@@ -567,7 +572,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         if overflowed {
             #[cfg(debug_assertions)]
             unsafe {
-                *(rev_ptr.add(1) as *mut u8) = 1
+                *rev_ptr.add(1).cast::<u8>() = 1;
             }; // this limb is already zeroed for padding, so just set one byte
 
             #[cfg(not(debug_assertions))]
@@ -694,7 +699,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             let mut i: usize = 0;
             while i < self.0.len() {
                 if self.0.as_slice()[i].is_empty() {
-                    i += 1
+                    i += 1;
                 } else {
                     return false;
                 }
@@ -778,9 +783,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn from_bytes(input: Vec<[LimbVecScalar; LV_LEN]>, allocator: T) -> Integer<T> {
+    pub fn from_bytes(input: &[[LimbVecScalar; LV_LEN]], allocator: T) -> Integer<T> {
         let mut output = Vec::with_capacity_in(input.len(), allocator);
-        for limb in &input {
+        for limb in input {
             output.push(Limb::from_bytes(*limb));
         }
         Integer(output)
@@ -796,16 +801,16 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn from_checkpoint(input: Checkpoint, allocator: T) -> (Integer<T>, usize) {
-        let chopped_data = Integer::<T>::chop(input.integer).unwrap();
-        let packed_integer = Integer::from_bytes(chopped_data, allocator);
+    pub fn from_checkpoint(input: &Checkpoint, allocator: T) -> (Integer<T>, usize) {
+        let chopped_data = Integer::<T>::chop(&input.integer).unwrap();
+        let packed_integer = Self::from_bytes(&chopped_data, allocator);
         let integer = packed_integer.unpack(allocator);
         (integer, input.iteration)
     }
 
     #[must_use]
     #[inline]
-    pub fn chop(data: Vec<u8>) -> Option<Vec<[LimbVecScalar; LV_LEN]>> {
+    pub fn chop(data: &[u8]) -> Option<Vec<[LimbVecScalar; LV_LEN]>> {
         data.chunks(LV_LEN)
             .map(|chunk| chunk.try_into().ok())
             .collect()

@@ -71,7 +71,7 @@ fn test_pack_unpack_limb_random() {
             .map(|chunk| chunk.try_into().unwrap())
             .collect();
 
-        let reconstructed = Integer::from_bytes(organized_bytes, GlobalAllocator);
+        let reconstructed = Integer::from_bytes(&organized_bytes, GlobalAllocator);
         assert_eq!(reconstructed, packed);
         assert_eq!(reconstructed.unpack(GlobalAllocator), integer);
     }
@@ -145,7 +145,7 @@ fn test_write_and_read_checkpoint() {
         .chunks(LV_LEN)
         .map(|chunk| chunk.try_into().unwrap())
         .collect();
-    let integer_read = Integer::from_bytes(organized_bytes, GlobalAllocator);
+    let integer_read = Integer::from_bytes(&organized_bytes, GlobalAllocator);
 
     //assert_eq!(integer, integer_read.clone());
     assert_eq!(integer, integer_read.clone().unpack(GlobalAllocator));

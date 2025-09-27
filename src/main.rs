@@ -30,6 +30,7 @@ use integer_limb::{
 use std::alloc::Global;
 use std::any::type_name;
 use std::hint::{cold_path, unlikely};
+use std::intrinsics::{fdiv_fast, fmul_fast};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -69,10 +70,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
 
-    let checkpoint_dir = match std::env::var("LYCHREL_CHECKPOINTS_PATH") {
-        Ok(path) => path.trim_end_matches(['/', '\\']).to_string(),
-        Err(_) => DEFAULT_CHECKPOINT_DIR.to_string(),
-    };
+    let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(|_| DEFAULT_CHECKPOINT_DIR.to_string(), |path| path.trim_end_matches(['/', '\\']).to_string());
 
     #[derive(PartialEq, Eq, Clone, Copy)]
     enum ExecType {
@@ -119,20 +117,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))]
     let mut initial_value: Integer<Global> = Integer(Vec::new());
 
-    let exec_type = match args.get(1) {
-        Some(arg) => match arg.as_str() {
+    let exec_type = args.get(1).map_or_else(|| {
+        eprintln!("Please specify a run type\n");
+        None
+    }, |arg| match arg.as_str() {
             "run" => Some(ExecType::Run),
             "read" => Some(ExecType::Read),
             _ => {
                 eprintln!("Unexpected run type argument: {arg}\n");
                 None
             }
-        },
-        None => {
-            eprintln!("Please specify a run type\n");
-            None
-        }
-    };
+        });
 
     for (idx, arg) in args.iter().enumerate().skip(2) {
         if skip_next_arg {
@@ -148,65 +143,44 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--version" => version = true,
             "--seed" => {
                 skip_next_arg = true;
-                seed_number = match args.get(idx + 1) {
-                    Some(seed) => match seed.parse::<u128>() {
-                        Ok(seed) => seed,
-                        Err(_) => {
-                            eprintln!("Please specify a valid seed number");
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!("Please specify a seed number");
+                seed_number = args.get(idx + 1).map_or_else(|| {
+                    eprintln!("Please specify a seed number");
+                    std::process::exit(1);
+                }, |seed| seed.parse::<u128>().unwrap_or_else(|_| {
+                        eprintln!("Please specify a valid seed number");
                         std::process::exit(1);
-                    }
-                };
+                    }));
             }
             "--checkpoint-dir" => {
                 skip_next_arg = true;
-                checkpoint_path_str = match args.get(idx + 1) {
-                    Some(path) => path.to_string(),
-                    None => {
-                        eprintln!("Please specify a checkpoint directory path");
-                        std::process::exit(1);
-                    }
-                };
+                checkpoint_path_str = args.get(idx + 1).map_or_else(|| {
+                    eprintln!("Please specify a checkpoint directory path");
+                    std::process::exit(1);
+                }, |path| path.clone());
             }
             "--start-at" => {
                 skip_next_arg = true;
-                start_at = match args.get(idx + 1) {
-                    Some(start_at_str) => match start_at_str.parse::<usize>() {
-                        Ok(start_at_val) => Some(start_at_val),
-                        Err(_) => {
-                            eprintln!("Please specify a valid start value");
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!("Please specify a start value");
+                start_at = args.get(idx + 1).map_or_else(|| {
+                    eprintln!("Please specify a start value");
+                    std::process::exit(1);
+                }, |start_at_str| start_at_str.parse::<usize>().map_or_else(|_| {
+                        eprintln!("Please specify a valid start value");
                         std::process::exit(1);
-                    }
-                };
+                    }, Some));
             }
             "--stop-at" => {
                 skip_next_arg = true;
-                stop_at = match args.get(idx + 1) {
-                    Some(stop_at_str) => match stop_at_str.parse::<usize>() {
-                        Ok(stop_at_val) => Some(if stop_at_val == 0 {
+                stop_at = args.get(idx + 1).map_or_else(|| {
+                    eprintln!("Please specify a stop value");
+                    std::process::exit(1);
+                }, |stop_at_str| stop_at_str.parse::<usize>().map_or_else(|_| {
+                        eprintln!("Please specify a valid stop value");
+                        std::process::exit(1);
+                    }, |stop_at_val| Some(if stop_at_val == 0 {
                             LIMIT
                         } else {
                             stop_at_val + 1
-                        }),
-                        Err(_) => {
-                            eprintln!("Please specify a valid stop value");
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!("Please specify a stop value");
-                        std::process::exit(1);
-                    }
-                };
+                        })));
             }
             "--no-checkpoint" => {
                 no_checkpoint = true;
@@ -228,13 +202,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--path" => {
                 skip_next_arg = true;
-                read_path = match args.get(idx + 1) {
-                    Some(path) => Some(Path::new(path)),
-                    None => {
-                        eprintln!("Please specify a path");
-                        std::process::exit(1);
-                    }
-                };
+                read_path = args.get(idx + 1).map_or_else(|| {
+                    eprintln!("Please specify a path");
+                    std::process::exit(1);
+                }, |path| Some(Path::new(path)));
             }
             "--verify" => {
                 read_verify = true;
@@ -356,10 +327,7 @@ SIMD Lychrel Number Search
                 }
             }
 
-            let stop_at: usize = match stop_at {
-                Some(stop_at) => stop_at,
-                None => run_type_stop_at,
-            };
+            let stop_at: usize = stop_at.map_or(run_type_stop_at, |stop_at| stop_at);
 
             let checkpoint_path = Path::new(&checkpoint_path_str);
             match std::fs::read_dir(checkpoint_path) {
@@ -375,7 +343,7 @@ SIMD Lychrel Number Search
                         // filter out those that are irrelevant to our current seed
                         let mut checkpoint_files: Vec<std::path::PathBuf> =
                             entries
-                                .filter_map(|entry| entry.ok())
+                                .filter_map(std::result::Result::ok)
                                 .map(|entry| entry.path())
                                 .filter(|path| {
                                     path.file_name().and_then(|name| name.to_str()).is_some_and(
@@ -394,28 +362,25 @@ SIMD Lychrel Number Search
 
                         match start_at {
                             Some(start_at_value) => {
-                                let checkpoint_path = match checkpoint_files.into_iter().find(
-                                    |path| {
+                                let Some(checkpoint_path) =
+                                    checkpoint_files.into_iter().find(|path| {
                                         path.file_name()
                                             .and_then(|name| name.to_str())
                                             .and_then(|s| s.split('.').next())
                                             .and_then(|s| s.parse::<usize>().ok())
                                             .is_some_and(|i| i == start_at_value)
-                                    },
-                                ) {
-                                    Some(path) => path,
-                                    None => {
-                                        eprintln!(
-                                            "No checkpoint found with index {start_at_value:} in {}",
-                                            checkpoint_path.canonicalize()?.display()
-                                        );
-                                        std::process::exit(1);
-                                    }
+                                    })
+                                else {
+                                    eprintln!(
+                                        "No checkpoint found with index {start_at_value:} in {}",
+                                        checkpoint_path.canonicalize()?.display()
+                                    );
+                                    std::process::exit(1);
                                 };
                                 let checkpoint_data = std::fs::read(checkpoint_path)?;
                                 let checkpoint = Checkpoint::new(start_at_value, checkpoint_data);
                                 (initial_value, _) =
-                                    Integer::from_checkpoint(checkpoint, allocator);
+                                    Integer::from_checkpoint(&checkpoint, allocator);
                                 starting_iteration = start_at_value + 1;
                             }
 
@@ -434,24 +399,22 @@ SIMD Lychrel Number Search
                                     let checkpoint =
                                         Checkpoint::new(checkpoint_iteration, checkpoint_data);
                                     (initial_value, _) =
-                                        Integer::from_checkpoint(checkpoint, allocator);
+                                        Integer::from_checkpoint(&checkpoint, allocator);
                                     starting_iteration = checkpoint_iteration + 1;
                                 }
                             }
                         }
                     }
                 }
-                Err(_) => {
-                    match std::fs::create_dir(checkpoint_path) {
-                        Ok(_) => {
-                            eprintln!("Created new local checkpoints folder in local directory")
-                        }
-                        Err(err) => {
-                            eprintln!("Error creating local checkpoints folder: {err}");
-                            std::process::exit(1);
-                        }
-                    };
-                }
+                Err(_) => match std::fs::create_dir(checkpoint_path) {
+                    Ok(()) => {
+                        eprintln!("Created new local checkpoints folder in local directory");
+                    }
+                    Err(err) => {
+                        eprintln!("Error creating local checkpoints folder: {err}");
+                        std::process::exit(1);
+                    }
+                },
             }
 
             if starting_iteration > 1 {
@@ -465,7 +428,7 @@ SIMD Lychrel Number Search
             let (tx, rx) = mpsc::channel::<iterate::StatusReport>();
 
             let iteration_handle = thread::spawn(move || {
-                iterate::iterate(starting_iteration..stop_at, initial_value, Some(tx))
+                iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
             });
 
             let mut step_time = Instant::now();
@@ -515,73 +478,65 @@ SIMD Lychrel Number Search
                         if checkpoint_path.exists() && checkpoint_path.is_file() {
                             print!("Checkpoint already exists; validating... ");
                             // read the file
-                            let mut file = match std::fs::File::open(checkpoint_path) {
-                                Ok(file) => file,
-                                Err(_) => {
-                                    cold_path();
-                                    eprintln!("UNABLE TO OPEN FILE\nContinuing anyway...");
+                            let Ok(mut file) = std::fs::File::open(checkpoint_path) else {
+                                cold_path();
+                                eprintln!("UNABLE TO OPEN FILE\nContinuing anyway...");
 
-                                    continue;
-                                }
+                                continue;
                             };
                             let mut buffer = Vec::with_capacity(checkpoint.integer.len());
-                            match file.read_to_end(&mut buffer) {
-                                Ok(_) => {
-                                    use std::hint::likely;
+                            if file.read_to_end(&mut buffer).is_ok() {
+                                use std::hint::likely;
 
-                                    let read_checkpoint = Checkpoint::new(i, buffer);
-                                    if likely(read_checkpoint == checkpoint) {
-                                        println!("OK");
-                                    } else {
-                                        cold_path();
-                                        println!("FAILED");
-                                        eprintln!(
-                                            "Checkpoint validation failed at checkpoint {i:}"
-                                        );
-                                        let read_checkpoint_len = read_checkpoint.data().1.len();
-                                        let read_checkpoint_vector_size: u8 =
-                                            if read_checkpoint_len.is_multiple_of(64) {
-                                                64
-                                            } else if read_checkpoint_len.is_multiple_of(32) {
-                                                32
-                                            } else if read_checkpoint_len.is_multiple_of(16) {
-                                                16
-                                            } else if read_checkpoint_len.is_multiple_of(8) {
-                                                8
-                                            } else if read_checkpoint_len.is_multiple_of(4) {
-                                                4
-                                            } else if read_checkpoint_len.is_multiple_of(2) {
-                                                2
-                                            } else {
-                                                1
-                                            };
-
-                                        if !checkpoint
-                                            .data()
-                                            .1
-                                            .len()
-                                            .is_multiple_of(read_checkpoint_vector_size as usize)
-                                        {
-                                            cold_path();
-                                            eprintln!(
-                                                "It is possible that the current machine uses a different word size than the machine that generated this checkpoint.\nRead vector size: {read_checkpoint_vector_size:} bytes\nCurrent vector size: {LV_LEN:} bytes",
-                                            )
-                                        }
-                                        std::process::exit(1)
-                                    }
-                                }
-                                Err(_) => {
+                                let read_checkpoint = Checkpoint::new(i, buffer);
+                                if likely(read_checkpoint == checkpoint) {
+                                    println!("OK");
+                                } else {
                                     cold_path();
-                                    eprintln!("UNABLE TO READ FILE");
-                                    eprintln!("Continuing anyway...")
+                                    println!("FAILED");
+                                    eprintln!("Checkpoint validation failed at checkpoint {i:}");
+                                    let read_checkpoint_len = read_checkpoint.data().1.len();
+                                    let read_checkpoint_vector_size: u8 =
+                                        if read_checkpoint_len.is_multiple_of(64) {
+                                            64
+                                        } else if read_checkpoint_len.is_multiple_of(32) {
+                                            32
+                                        } else if read_checkpoint_len.is_multiple_of(16) {
+                                            16
+                                        } else if read_checkpoint_len.is_multiple_of(8) {
+                                            8
+                                        } else if read_checkpoint_len.is_multiple_of(4) {
+                                            4
+                                        } else if read_checkpoint_len.is_multiple_of(2) {
+                                            2
+                                        } else {
+                                            1
+                                        };
+
+                                    if !checkpoint
+                                        .data()
+                                        .1
+                                        .len()
+                                        .is_multiple_of(read_checkpoint_vector_size as usize)
+                                    {
+                                        cold_path();
+                                        eprintln!(
+                                            "It is possible that the current machine uses a different word size than the machine that generated this checkpoint.\nRead vector size: {read_checkpoint_vector_size:} bytes\nCurrent vector size: {LV_LEN:} bytes",
+                                        );
+                                    }
+                                    std::process::exit(1)
                                 }
+                            } else {
+                                cold_path();
+                                eprintln!("UNABLE TO READ FILE");
+                                eprintln!("Continuing anyway...");
                             }
                         } else {
                             print!("Writing checkpoint to {}... ", checkpoint_path.display());
                             let data = checkpoint.data().1;
                             let data_length = data.len();
                             match std::fs::write(checkpoint_path, data) {
-                                Ok(_) => {
+                                Ok(()) => {
                                     println!("OK");
                                     println!("Wrote {:} KiB", data_length / 1024);
                                 }
@@ -605,7 +560,6 @@ SIMD Lychrel Number Search
                     #[cfg(not(target_family = "windows"))]
                     println!("{:} KiB of memory", (num_limbs * LV_BYTES) / 1024);
 
-                    use std::intrinsics::{fdiv_fast, fmul_fast};
                     let tetrahexacontabytes_per_second =
                         unsafe { fmul_fast(num_limbs as f64, rate) };
                     println!(
@@ -613,11 +567,11 @@ SIMD Lychrel Number Search
                         unsafe {
                             fdiv_fast(
                                 tetrahexacontabytes_per_second,
-                                (1073741824 / LV_BYTES) as f64,
+                                (1_073_741_824 / LV_BYTES) as f64,
                             )
                         },
                         unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
-                        unsafe { fdiv_fast(tetrahexacontabytes_per_second, 15625000f64) },
+                        unsafe { fdiv_fast(tetrahexacontabytes_per_second, 15_625_000_f64) },
                     );
                     // current rate = 64(num_limbs) / 1073741824
                 }
@@ -650,7 +604,7 @@ SIMD Lychrel Number Search
                 if found_palindrome { "Did" } else { "Did not" },
                 last_iteration,
                 if found_palindrome {
-                    format! {": {:}", &end_integer}
+                    format!(": {:}", &end_integer)
                 } else {
                     ".".to_string()
                 }
@@ -677,17 +631,14 @@ SIMD Lychrel Number Search
             // try to read from the file
             let file = std::fs::read(file_path)?;
 
-            let data: Vec<[LimbVecScalar; LV_LEN]> = match Integer::<Global>::chop(file) {
-                None => {
+            let data: Vec<[LimbVecScalar; LV_LEN]> = Integer::<Global>::chop(&file).map_or_else(|| {
                     eprintln!("\x1b[1;31merror\x1b[0m: file length is not a multiple of 64 bytes");
                     std::process::exit(1);
-                }
-                Some(data) => data,
-            };
+                }, |data| data);
 
             let global_allocator = Global;
 
-            let integer = Integer::from_bytes(data, global_allocator).unpack(global_allocator);
+            let integer = Integer::from_bytes(&data, global_allocator).unpack(global_allocator);
 
             if read_verify && integer.has_carries() {
                 eprintln!("\x1b[1;31merror\x1b[0m: unpacked integer has carries");
