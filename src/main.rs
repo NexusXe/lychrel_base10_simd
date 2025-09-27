@@ -477,9 +477,8 @@ SIMD Lychrel Number Search
 
                 let log_idx = i.div_floor(iterate::LOG_MASK) % 16;
 
-                let rate: f64 = unsafe {
-                    std::intrinsics::fdiv_fast(iterate::LOG_MASK as f64, elapsed_time.as_secs_f64())
-                };
+                let rate: f64 =
+                    unsafe { fdiv_fast(iterate::LOG_MASK as f64, elapsed_time.as_secs_f64()) };
 
                 println!(
                     "{}:{} {i}; {rate:.2} iter/sec",
@@ -602,11 +601,16 @@ SIMD Lychrel Number Search
                         unsafe {
                             fdiv_fast(
                                 tetrahexacontabytes_per_second,
-                                (1_073_741_824 / LV_BYTES) as f64,
+                                ((1024u32 * 1024 * 1024) / LV_BYTES as u32) as f64,
                             )
                         },
                         unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
-                        unsafe { fdiv_fast(tetrahexacontabytes_per_second, 15_625_000_f64) },
+                        unsafe {
+                            fdiv_fast(
+                                tetrahexacontabytes_per_second,
+                                (1_000_000_000u32 / 64) as f64,
+                            )
+                        },
                     );
                     // current rate = 64(num_limbs) / 1073741824
                 }
