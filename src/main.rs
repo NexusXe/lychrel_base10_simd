@@ -70,7 +70,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
 
-    let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(|_| DEFAULT_CHECKPOINT_DIR.to_string(), |path| path.trim_end_matches(['/', '\\']).to_string());
+    let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(
+        |_| DEFAULT_CHECKPOINT_DIR.to_string(),
+        |path| path.trim_end_matches(['/', '\\']).to_string(),
+    );
 
     #[derive(PartialEq, Eq, Clone, Copy)]
     enum ExecType {
@@ -117,17 +120,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))]
     let mut initial_value: Integer<Global> = Integer(Vec::new());
 
-    let exec_type = args.get(1).map_or_else(|| {
-        eprintln!("Please specify a run type\n");
-        None
-    }, |arg| match arg.as_str() {
+    let exec_type = args.get(1).map_or_else(
+        || {
+            eprintln!("Please specify a run type\n");
+            None
+        },
+        |arg| match arg.as_str() {
             "run" => Some(ExecType::Run),
             "read" => Some(ExecType::Read),
             _ => {
                 eprintln!("Unexpected run type argument: {arg}\n");
                 None
             }
-        });
+        },
+    );
 
     for (idx, arg) in args.iter().enumerate().skip(2) {
         if skip_next_arg {
@@ -143,44 +149,70 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--version" => version = true,
             "--seed" => {
                 skip_next_arg = true;
-                seed_number = args.get(idx + 1).map_or_else(|| {
-                    eprintln!("Please specify a seed number");
-                    std::process::exit(1);
-                }, |seed| seed.parse::<u128>().unwrap_or_else(|_| {
-                        eprintln!("Please specify a valid seed number");
+                seed_number = args.get(idx + 1).map_or_else(
+                    || {
+                        eprintln!("Please specify a seed number");
                         std::process::exit(1);
-                    }));
+                    },
+                    |seed| {
+                        seed.parse::<u128>().unwrap_or_else(|_| {
+                            eprintln!("Please specify a valid seed number");
+                            std::process::exit(1);
+                        })
+                    },
+                );
             }
             "--checkpoint-dir" => {
                 skip_next_arg = true;
-                checkpoint_path_str = args.get(idx + 1).map_or_else(|| {
-                    eprintln!("Please specify a checkpoint directory path");
-                    std::process::exit(1);
-                }, |path| path.clone());
+                checkpoint_path_str = args.get(idx + 1).map_or_else(
+                    || {
+                        eprintln!("Please specify a checkpoint directory path");
+                        std::process::exit(1);
+                    },
+                    std::clone::Clone::clone,
+                );
             }
             "--start-at" => {
                 skip_next_arg = true;
-                start_at = args.get(idx + 1).map_or_else(|| {
-                    eprintln!("Please specify a start value");
-                    std::process::exit(1);
-                }, |start_at_str| start_at_str.parse::<usize>().map_or_else(|_| {
-                        eprintln!("Please specify a valid start value");
+                start_at = args.get(idx + 1).map_or_else(
+                    || {
+                        eprintln!("Please specify a start value");
                         std::process::exit(1);
-                    }, Some));
+                    },
+                    |start_at_str| {
+                        start_at_str.parse::<usize>().map_or_else(
+                            |_| {
+                                eprintln!("Please specify a valid start value");
+                                std::process::exit(1);
+                            },
+                            Some,
+                        )
+                    },
+                );
             }
             "--stop-at" => {
                 skip_next_arg = true;
-                stop_at = args.get(idx + 1).map_or_else(|| {
-                    eprintln!("Please specify a stop value");
-                    std::process::exit(1);
-                }, |stop_at_str| stop_at_str.parse::<usize>().map_or_else(|_| {
-                        eprintln!("Please specify a valid stop value");
+                stop_at = args.get(idx + 1).map_or_else(
+                    || {
+                        eprintln!("Please specify a stop value");
                         std::process::exit(1);
-                    }, |stop_at_val| Some(if stop_at_val == 0 {
-                            LIMIT
-                        } else {
-                            stop_at_val + 1
-                        })));
+                    },
+                    |stop_at_str| {
+                        stop_at_str.parse::<usize>().map_or_else(
+                            |_| {
+                                eprintln!("Please specify a valid stop value");
+                                std::process::exit(1);
+                            },
+                            |stop_at_val| {
+                                Some(if stop_at_val == 0 {
+                                    LIMIT
+                                } else {
+                                    stop_at_val + 1
+                                })
+                            },
+                        )
+                    },
+                );
             }
             "--no-checkpoint" => {
                 no_checkpoint = true;
@@ -202,10 +234,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--path" => {
                 skip_next_arg = true;
-                read_path = args.get(idx + 1).map_or_else(|| {
-                    eprintln!("Please specify a path");
-                    std::process::exit(1);
-                }, |path| Some(Path::new(path)));
+                read_path = args.get(idx + 1).map_or_else(
+                    || {
+                        eprintln!("Please specify a path");
+                        std::process::exit(1);
+                    },
+                    |path| Some(Path::new(path)),
+                );
             }
             "--verify" => {
                 read_verify = true;
@@ -631,10 +666,13 @@ SIMD Lychrel Number Search
             // try to read from the file
             let file = std::fs::read(file_path)?;
 
-            let data: Vec<[LimbVecScalar; LV_LEN]> = Integer::<Global>::chop(&file).map_or_else(|| {
+            let data: Vec<[LimbVecScalar; LV_LEN]> = Integer::<Global>::chop(&file).map_or_else(
+                || {
                     eprintln!("\x1b[1;31merror\x1b[0m: file length is not a multiple of 64 bytes");
                     std::process::exit(1);
-                }, |data| data);
+                },
+                |data| data,
+            );
 
             let global_allocator = Global;
 
