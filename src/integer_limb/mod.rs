@@ -414,7 +414,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let lhs = &mut *left_limb_ptr;
                 let rhs = &mut *right_limb_ptr;
 
-                // shift these as qwords since it's faster
+                // shift these as qwords since byte-wise shifts use gfni
                 let lhs_output = *lhs
                     | transmute::<WideVec, LimbVec>(
                         transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
@@ -528,27 +528,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             + transmute::<LimbVec, WideVec>(reversed_limb),
                     );
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                    overflowed = carry_mask.test(LV_LEN - 1);
-
-                    if carry_mask.any() {
-                        ever_carried = true;
-                    }
-
-                    let subtracted_limb = limb.0 - CARRY_MASK_CMP;
-                    limb.0 = carry_mask.select(subtracted_limb, limb.0);
-
-                    let added_limb = limb.0 + LimbVec::splat(1);
-                    limb.0 = (carry_mask.shift_elements_right::<1>(forward_carry))
-                        .select(added_limb, limb.0);
-
-                    loop {
-                        let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                        if carry_mask.test(LV_LEN - 1) {
-                            overflowed = true;
-                        } else if !carry_mask.any() {
-                            cold_path();
-                            break;
-                        }
+                    if likely(forward_carry || carry_mask.any()) {
+                        overflowed = carry_mask.test(LV_LEN - 1);
 
                         ever_carried = true;
 
@@ -556,9 +537,28 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
                         let added_limb = limb.0 + LimbVec::splat(1);
-                        limb.0 = carry_mask
-                            .shift_elements_right::<1>(false)
+                        limb.0 = (carry_mask.shift_elements_right::<1>(forward_carry))
                             .select(added_limb, limb.0);
+
+                        loop {
+                            let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
+                            if carry_mask.test(LV_LEN - 1) {
+                                overflowed = true;
+                            } else if !carry_mask.any() {
+                                cold_path();
+                                break;
+                            }
+
+                            ever_carried = true;
+
+                            let subtracted_limb = limb.0 - CARRY_MASK_CMP;
+                            limb.0 = carry_mask.select(subtracted_limb, limb.0);
+
+                            let added_limb = limb.0 + LimbVec::splat(1);
+                            limb.0 = carry_mask
+                                .shift_elements_right::<1>(false)
+                                .select(added_limb, limb.0);
+                        }
                     }
                 }
             }
