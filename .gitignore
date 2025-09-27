@@ -13,3 +13,5 @@ checkpoints/
 compare/
 
 .cargo/config.toml
+
+*.ps1
