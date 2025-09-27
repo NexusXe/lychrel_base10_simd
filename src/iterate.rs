@@ -4,13 +4,13 @@ use std::hint::{cold_path, likely, unlikely};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-pub struct IterationResult<T: Allocator + Clone + Copy> {
+pub(crate) struct IterationResult<T: Allocator + Clone + Copy> {
     pub(crate) last_iteration: usize,
     pub(crate) start_time: Instant,
     pub(crate) end_integer: Integer<T>,
 }
 
-pub struct StatusReport {
+pub(crate) struct StatusReport {
     pub(crate) iteration: usize,
     pub(crate) current_value: Option<Integer<Global>>,
 }
