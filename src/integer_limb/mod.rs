@@ -113,6 +113,18 @@ mod huge_page_alloc;
 #[allow(unused_imports)]
 pub use huge_page_alloc::*;
 
+macro_rules! impossible {
+    ($message:expr) => {
+        #[cfg(debug_assertions)]
+        unreachable!($message);
+
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            unreachable_unchecked()
+        }
+    };
+}
+
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 ///
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
@@ -337,13 +349,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to reverse an empty integer");
         }
 
         let output_vec: &mut Vec<Limb, GlobalAllocator> = &mut output.0;
@@ -373,13 +379,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let right_bound = output_slice.len() - (LV_LEN - skip_len);
         if !(right_bound - skip_len).is_multiple_of(LV_LEN) {
-            #[cfg(debug_assertions)]
-            unreachable!("Reversal memory copy is not a multiple of 64 bytes");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Reversal memory copy is not a multiple of 64 bytes");
         }
         output_slice.copy_within(skip_len..right_bound, 0);
 
@@ -392,13 +392,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse and add empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to reverse and add empty integer");
         }
 
         let total_limbs = self.0.len();
@@ -442,6 +436,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
+            // the `impossible!()` macro contains its own `unsafe{}` block, which causes a warning
+            #[allow(unused_unsafe)]
             unsafe {
                 let limb_ptr = &raw const limb.0;
 
@@ -463,11 +459,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                     for result in limb.0.as_array() {
                         if *result > 18 {
-                            #[cfg(debug_assertions)]
-                            unreachable!("Got impossible addition result");
-
-                            #[cfg(not(debug_assertions))]
-                            unreachable_unchecked();
+                            impossible!("Got impossible addition result");
                         }
                     }
 
@@ -589,13 +581,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to show differences between empty integers");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to show differences between empty integers");
         }
 
         if self.0.len() != rhs.0.len() {
@@ -649,13 +635,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn has_carries(&self) -> bool {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to check if empty integer has carries");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to check if empty integer has carries");
         }
 
         for limb in &self.0 {
@@ -671,12 +651,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     pub fn len(&self) -> usize {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
-            unreachable!("Tried to get the length of an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to get the length of an empty integer");
         }
 
         unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
@@ -715,13 +690,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     pub fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried pack an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried pack an empty integer");
         }
 
         // take Limbs in pairs and pack them together
@@ -748,13 +717,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[must_use]
     pub fn unpack(self, allocator: T) -> Integer<T> {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to unpack an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to unpack an empty integer");
         }
 
         let mut output = Vec::with_capacity_in(self.0.len() * 2, allocator);
@@ -859,13 +822,7 @@ impl<T: Allocator + Clone + Copy> std::fmt::Display for Integer<T> {
 impl<T: Allocator + Clone + Copy> std::cmp::PartialEq for Integer<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to compare an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to compare an empty integer");
         }
 
         if self.0.len() != other.0.len() {
