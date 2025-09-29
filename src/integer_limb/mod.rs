@@ -237,6 +237,17 @@ impl Limb {
         LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN))
     }
 
+    #[inline(always)]
+    unsafe fn shl_quad<const N: u64>(&self) -> Self {
+        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) << N) })
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    unsafe fn shr_quad<const N: u64>(&self) -> Self {
+        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
+    }
+
     fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
@@ -414,14 +425,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let rhs = &mut *right_limb_ptr;
 
                 // shift these as qwords since byte-wise shifts use gfni
-                let lhs_output = *lhs
-                    | transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
-                    );
-                let rhs_output = *rhs
-                    | transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
-                    );
+                let lhs_output = *lhs | Limb(rhs.reverse()).shl_quad::<4>().0;
+                let rhs_output = *rhs | Limb(lhs.reverse()).shl_quad::<4>().0;
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
@@ -520,10 +525,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    limb.0 = transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(limb.0)
-                            + transmute::<LimbVec, WideVec>(reversed_limb),
-                    );
+                    *limb = *limb + Limb(reversed_limb);
+
+                    for result in limb.0.as_array() {
+                        if *result > 18 {
+                            impossible!("Got impossible addition result");
+                        }
+                    }
+
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
                     if likely(forward_carry || carry_mask.any()) {
                         overflowed = carry_mask.test(LV_LEN - 1);
