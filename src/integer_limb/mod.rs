@@ -300,6 +300,7 @@ impl const std::default::Default for Limb {
 impl std::ops::Add for Limb {
     type Output = Self;
 
+    #[inline(always)]
     fn add(self, other: Self) -> Self::Output {
         unsafe {
             let input_64: WideVec = transmute(self.0);
@@ -474,9 +475,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
                     if likely((carry_mask != 0) || forward_carry) {
-                        overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
-
                         ever_carried = true;
+                        overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
                         limb.0 = _mm512_mask_sub_epi8(
                             limb.0.into(),
@@ -534,36 +534,34 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     }
 
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                    if likely(forward_carry || carry_mask.any()) {
-                        overflowed = carry_mask.test(LV_LEN - 1);
 
+                    if likely(forward_carry || carry_mask.any()) {
                         ever_carried = true;
+                        overflowed = carry_mask.to_bitmask() >> (LV_LEN - 1) != 0;
 
                         let subtracted_limb = limb.0 - CARRY_MASK_CMP;
                         limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                        let added_limb = limb.0 + LimbVec::splat(1);
+                        let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
                         limb.0 = (carry_mask.shift_elements_right::<1>(forward_carry))
                             .select(added_limb, limb.0);
 
                         loop {
                             let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                            if carry_mask.test(LV_LEN - 1) {
-                                overflowed = true;
-                            } else if !carry_mask.any() {
-                                cold_path();
-                                break;
-                            }
-
-                            ever_carried = true;
 
                             let subtracted_limb = limb.0 - CARRY_MASK_CMP;
                             limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                            let added_limb = limb.0 + LimbVec::splat(1);
+                            let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
                             limb.0 = carry_mask
                                 .shift_elements_right::<1>(false)
                                 .select(added_limb, limb.0);
+
+                            if carry_mask.to_bitmask() >> (LV_LEN - 1) != 0 {
+                                overflowed = true;
+                            } else if !carry_mask.any() {
+                                break;
+                            }
                         }
                     }
                 }
