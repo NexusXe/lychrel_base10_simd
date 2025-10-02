@@ -113,6 +113,18 @@ mod huge_page_alloc;
 #[allow(unused_imports)]
 pub use huge_page_alloc::*;
 
+macro_rules! impossible {
+    ($message:expr) => {
+        #[cfg(debug_assertions)]
+        unreachable!($message);
+
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            unreachable_unchecked()
+        }
+    };
+}
+
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 ///
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
@@ -225,6 +237,17 @@ impl Limb {
         LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN))
     }
 
+    #[inline(always)]
+    unsafe fn shl_quad<const N: u64>(&self) -> Self {
+        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) << N) })
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    unsafe fn shr_quad<const N: u64>(&self) -> Self {
+        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
+    }
+
     fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
@@ -277,6 +300,7 @@ impl const std::default::Default for Limb {
 impl std::ops::Add for Limb {
     type Output = Self;
 
+    #[inline(always)]
     fn add(self, other: Self) -> Self::Output {
         unsafe {
             let input_64: WideVec = transmute(self.0);
@@ -337,13 +361,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to reverse an empty integer");
         }
 
         let output_vec: &mut Vec<Limb, GlobalAllocator> = &mut output.0;
@@ -373,13 +391,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let right_bound = output_slice.len() - (LV_LEN - skip_len);
         if !(right_bound - skip_len).is_multiple_of(LV_LEN) {
-            #[cfg(debug_assertions)]
-            unreachable!("Reversal memory copy is not a multiple of 64 bytes");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Reversal memory copy is not a multiple of 64 bytes");
         }
         output_slice.copy_within(skip_len..right_bound, 0);
 
@@ -392,13 +404,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to reverse and add empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to reverse and add empty integer");
         }
 
         let total_limbs = self.0.len();
@@ -420,14 +426,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let rhs = &mut *right_limb_ptr;
 
                 // shift these as qwords since byte-wise shifts use gfni
-                let lhs_output = *lhs
-                    | transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(rhs.reverse()) << 4,
-                    );
-                let rhs_output = *rhs
-                    | transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(lhs.reverse()) << 4,
-                    );
+                let lhs_output = *lhs | Limb(rhs.reverse()).shl_quad::<4>().0;
+                let rhs_output = *rhs | Limb(lhs.reverse()).shl_quad::<4>().0;
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
@@ -442,6 +442,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
+            // the `impossible!()` macro contains its own `unsafe{}` block, which causes a warning
+            #[allow(unused_unsafe)]
             unsafe {
                 let limb_ptr = &raw const limb.0;
 
@@ -463,11 +465,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                     for result in limb.0.as_array() {
                         if *result > 18 {
-                            #[cfg(debug_assertions)]
-                            unreachable!("Got impossible addition result");
-
-                            #[cfg(not(debug_assertions))]
-                            unreachable_unchecked();
+                            impossible!("Got impossible addition result");
                         }
                     }
 
@@ -477,9 +475,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
                     if likely((carry_mask != 0) || forward_carry) {
-                        overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
-
                         ever_carried = true;
+                        overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
                         limb.0 = _mm512_mask_sub_epi8(
                             limb.0.into(),
@@ -528,41 +525,43 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    limb.0 = transmute::<WideVec, LimbVec>(
-                        transmute::<LimbVec, WideVec>(limb.0)
-                            + transmute::<LimbVec, WideVec>(reversed_limb),
-                    );
-                    let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                    if likely(forward_carry || carry_mask.any()) {
-                        overflowed = carry_mask.test(LV_LEN - 1);
+                    *limb = *limb + Limb(reversed_limb);
 
+                    for result in limb.0.as_array() {
+                        if *result > 18 {
+                            impossible!("Got impossible addition result");
+                        }
+                    }
+
+                    let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
+
+                    if likely(forward_carry || carry_mask.any()) {
                         ever_carried = true;
+                        overflowed = carry_mask.to_bitmask() >> (LV_LEN - 1) != 0;
 
                         let subtracted_limb = limb.0 - CARRY_MASK_CMP;
                         limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                        let added_limb = limb.0 + LimbVec::splat(1);
+                        let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
                         limb.0 = (carry_mask.shift_elements_right::<1>(forward_carry))
                             .select(added_limb, limb.0);
 
                         loop {
                             let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
-                            if carry_mask.test(LV_LEN - 1) {
-                                overflowed = true;
-                            } else if !carry_mask.any() {
-                                cold_path();
-                                break;
-                            }
-
-                            ever_carried = true;
 
                             let subtracted_limb = limb.0 - CARRY_MASK_CMP;
                             limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
-                            let added_limb = limb.0 + LimbVec::splat(1);
+                            let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
                             limb.0 = carry_mask
                                 .shift_elements_right::<1>(false)
                                 .select(added_limb, limb.0);
+
+                            if carry_mask.to_bitmask() >> (LV_LEN - 1) != 0 {
+                                overflowed = true;
+                            } else if !carry_mask.any() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -589,13 +588,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to show differences between empty integers");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to show differences between empty integers");
         }
 
         if self.0.len() != rhs.0.len() {
@@ -649,13 +642,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn has_carries(&self) -> bool {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to check if empty integer has carries");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to check if empty integer has carries");
         }
 
         for limb in &self.0 {
@@ -671,12 +658,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     pub fn len(&self) -> usize {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
-            unreachable!("Tried to get the length of an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to get the length of an empty integer");
         }
 
         unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
@@ -715,13 +697,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     pub fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried pack an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried pack an empty integer");
         }
 
         // take Limbs in pairs and pack them together
@@ -748,13 +724,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[must_use]
     pub fn unpack(self, allocator: T) -> Integer<T> {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to unpack an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to unpack an empty integer");
         }
 
         let mut output = Vec::with_capacity_in(self.0.len() * 2, allocator);
@@ -859,13 +829,7 @@ impl<T: Allocator + Clone + Copy> std::fmt::Display for Integer<T> {
 impl<T: Allocator + Clone + Copy> std::cmp::PartialEq for Integer<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!("Tried to compare an empty integer");
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
+            impossible!("Tried to compare an empty integer");
         }
 
         if self.0.len() != other.0.len() {
