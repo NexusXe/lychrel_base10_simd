@@ -109,6 +109,7 @@ impl HugePageAllocator {
 
 unsafe impl Allocator for HugePageAllocator {
     #[cfg(target_os = "windows")]
+    #[inline]
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
         #[cfg(feature = "1g-pages")]
         const HUGE_PAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
@@ -192,6 +193,7 @@ unsafe impl Allocator for HugePageAllocator {
     }
 
     #[cfg(target_os = "windows")]
+    #[inline]
     unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, _layout: Layout) {
         //eprintln!("Deallocating {:} bytes", _layout.size());
         let result = unsafe { VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE) };
@@ -204,6 +206,7 @@ unsafe impl Allocator for HugePageAllocator {
     }
 
     #[cfg(target_family = "unix")]
+    #[inline]
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
         use libc::{MADV_HUGEPAGE, aligned_alloc, free, posix_madvise};
         static LARGE_PAGE: NonZeroUsize =
@@ -233,6 +236,7 @@ unsafe impl Allocator for HugePageAllocator {
     }
 
     #[cfg(target_family = "unix")]
+    #[inline]
     unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, _layout: Layout) {
         unsafe { libc::free(ptr.as_ptr() as *mut libc::c_void) };
     }

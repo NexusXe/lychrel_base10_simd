@@ -20,6 +20,7 @@ pub const LOG_FREQUENCY_EXP: usize = 14;
 pub const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
+#[inline]
 pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,
     starting_integer: Integer<T>,
@@ -37,7 +38,7 @@ pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
     while likely(i < range.end) {
         if unlikely(!carried) {
             cold_path();
-            eprintln!("Checking...");
+            //eprintln!("Checking...");
             let mut reverse = Integer(Vec::with_capacity(current_iteration.0.len()));
             current_iteration.reverse_into_integer(&mut reverse);
             if current_iteration.0 == reverse.0 {

@@ -7,9 +7,8 @@ rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
-llvm-config = "/home/briar/Documents/llvm-project/build/bin/llvm-config"
 linker = "rust-lld.exe"
 
 [target.x86_64-linux-unknown-gnu]
 rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-C", "panic=immediate-abort", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
-llvm-config = "/home/briar/Documents/llvm-project/build/bin/llvm-config"
+# llvm-config = "/home/briar/Documents/llvm-project/build/bin/llvm-config"

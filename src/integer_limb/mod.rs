@@ -347,11 +347,13 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     #[must_use]
+    #[inline(always)]
     pub const fn new(iteration: usize, integer: Vec<u8>) -> Self {
         Self { iteration, integer }
     }
 
     #[must_use]
+    #[inline(always)]
     pub fn data(self) -> (usize, Vec<u8>) {
         (self.iteration, self.integer)
     }
@@ -399,9 +401,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
+    #[inline(always)]
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
-        // instead of reversing into a seperate vector, reverse and pack into the original limb
 
         if self.0.is_empty() {
             impossible!("Tried to reverse and add empty integer");
@@ -417,6 +419,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0 }
             as *mut LimbVec;
 
+        // instead of reversing into a seperate vector, reverse and pack into the original limb
         for i in 0..total_limbs.div_ceil(2) {
             unsafe {
                 let left_limb_ptr = limbs_ptr.add(i);
@@ -436,6 +439,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         let mut overflowed = false;
         let mut ever_carried = false;
 
+        // addition process
+        // the reversed data is offset, but is guaranteed to be fully contained between the current and next cache line
+        // conveniently, the next cache line is going to be needed soon anyway so this is fine
         for (_, limb) in self
             .0
             .iter_mut()
@@ -514,9 +520,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             )
                             .into();
 
-                            if carry_mask & 0x8000_0000_0000_0000_u64 != 0 {
+                            if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
                                 overflowed = true;
-                            } else if carry_mask == 0 {
+                            } else if std::hint::unlikely(carry_mask == 0) {
                                 break;
                             }
                         }
