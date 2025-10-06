@@ -314,6 +314,7 @@ impl std::ops::Add for Limb {
 }
 
 impl std::fmt::Display for Limb {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for i in self.0.reverse().to_array() {
             if i > 9 as LimbVecScalar {
@@ -828,6 +829,7 @@ impl<T: Allocator + Clone + Copy> std::fmt::Debug for Integer<T> {
 }
 
 impl<T: Allocator + Clone + Copy> std::fmt::Display for Integer<T> {
+    #[inline(never)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut output_string = String::new();
         for limb in self.0.iter().rev() {
