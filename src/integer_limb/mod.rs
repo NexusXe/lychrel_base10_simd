@@ -156,8 +156,8 @@ impl const std::cmp::PartialEq for Limb {
         fn eq_rt(lhs: LimbVec, rhs: LimbVec) -> bool {
             #[cfg(debug_assertions)]
             {
-            lhs == rhs
-        }
+                lhs == rhs
+            }
 
             #[cfg(not(debug_assertions))]
             {
@@ -239,7 +239,6 @@ impl Limb {
         let bitmask = eq_mask.to_bitmask();
         LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
     }
-
 
     #[inline(always)]
     unsafe fn shl_wide<const N: u64>(&self) -> Self {
@@ -456,7 +455,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let limb_ptr = &raw const limb.0;
 
                 #[cfg(debug_assertions)]
-                let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
+                let reversed_limb: LimbVec =
+                    read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
 
                 #[cfg(not(debug_assertions))]
                 let reversed_limb: LimbVec =
@@ -669,7 +669,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             impossible!("Tried to get the length of an empty integer");
         }
 
-        unsafe { ((self.0.len() - 1) as u32 * LV_LEN as u32) + self.0.last().unwrap_unchecked().len() as u32 }
+        unsafe {
+            ((self.0.len() - 1) as u32 * LV_LEN as u32)
+                + self.0.last().unwrap_unchecked().len() as u32
+        }
     }
 
     #[inline]
