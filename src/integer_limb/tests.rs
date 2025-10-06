@@ -220,3 +220,18 @@ fn test_asm_bug_interleave() {
     );
     assert!(ever_carried);
 }
+
+#[test]
+fn test_limb_has_carries() {
+    let mut limb = Limb::new();
+    assert!(!limb.has_carries());
+    limb.0[0] = 10;
+    assert!(limb.has_carries());
+    limb.0 = LimbVec::splat(9);
+    assert!(!limb.has_carries());
+    limb.0 = LimbVec::splat(11);
+    assert!(limb.has_carries());
+    limb.0[LV_LEN - 1] = 9;
+    limb.0[0] = 9;
+    assert!(limb.has_carries());
+}
