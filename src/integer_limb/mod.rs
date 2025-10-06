@@ -586,7 +586,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             #[cfg(not(debug_assertions))]
             unsafe {
                 // for some reason an overflow check is happening on this addition
-                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1; // do the math manually with unchecked addition to remove an overflow check branch 
+                // safe because the memory for the padding was already allocated and zeroed
+                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
             }
         } else {
             self.0.pop();
@@ -709,7 +710,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     pub fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
-            impossible!("Tried pack an empty integer");
+            impossible!("Tried to pack an empty integer");
         }
 
         // take Limbs in pairs and pack them together
