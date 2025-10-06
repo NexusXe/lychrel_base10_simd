@@ -225,21 +225,22 @@ impl Limb {
     }
 
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u8 {
         const ZEROS: LimbVec = LimbVec::splat(0);
         let eq_mask = self.0.simd_ne(ZEROS);
         let bitmask = eq_mask.to_bitmask();
-        LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN))
+        LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
     }
 
+
     #[inline(always)]
-    unsafe fn shl_quad<const N: u64>(&self) -> Self {
+    unsafe fn shl_wide<const N: u64>(&self) -> Self {
         Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) << N) })
     }
 
     #[allow(dead_code)]
     #[inline(always)]
-    unsafe fn shr_quad<const N: u64>(&self) -> Self {
+    unsafe fn shr_wide<const N: u64>(&self) -> Self {
         Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
     }
 
@@ -369,7 +370,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         // however, the digits are misaligned
 
         // safe because of the check at the top
-        let skip_len: usize = LV_LEN - unsafe { self.0.last().unwrap_unchecked() }.len();
+        let skip_len = LV_LEN as u8 - unsafe { self.0.last().unwrap_unchecked() }.len();
 
         output_vec.push(Limb::new());
 
@@ -384,11 +385,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             [0; LV_LEN]
         );
 
-        let right_bound = output_slice.len() - (LV_LEN - skip_len);
-        if !(right_bound - skip_len).is_multiple_of(LV_LEN) {
+        let right_bound = output_slice.len() as u32 - (LV_LEN as u8 - skip_len) as u32;
+        if !(right_bound - skip_len as u32).is_multiple_of(LV_LEN as u32) {
             impossible!("Reversal memory copy is not a multiple of 64 bytes");
         }
-        output_slice.copy_within(skip_len..right_bound, 0);
+        output_slice.copy_within(skip_len as usize..right_bound as usize, 0);
 
         let discarded = output_vec.pop();
         debug_assert_eq!(Limb::new(), discarded.unwrap());
@@ -406,7 +407,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         self.0.push(Limb::new()); // padding
 
-        let skip_len = LV_LEN - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
+        let skip_len = LV_LEN as u8 - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
 
         let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
         let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0 }
@@ -422,8 +423,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let rhs = &mut *right_limb_ptr;
 
                 // shift these as qwords since byte-wise shifts use gfni
-                let lhs_output = *lhs | Limb(rhs.reverse()).shl_quad::<4>().0;
-                let rhs_output = *rhs | Limb(lhs.reverse()).shl_quad::<4>().0;
+                let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
+                let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
                 *lhs = lhs_output;
                 *rhs = rhs_output;
             }
@@ -447,11 +448,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let limb_ptr = &raw const limb.0;
 
                 #[cfg(debug_assertions)]
-                let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len)) >> 4;
+                let reversed_limb: LimbVec = read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
 
                 #[cfg(not(debug_assertions))]
                 let reversed_limb: LimbVec =
-                    read_unaligned((limb_ptr as usize + skip_len) as *const LimbVec) >> 4;
+                    read_unaligned((limb_ptr as usize + skip_len as usize) as *const LimbVec) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
@@ -654,13 +655,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u32 {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             impossible!("Tried to get the length of an empty integer");
         }
 
-        unsafe { ((self.0.len() - 1) * LV_LEN) + self.0.last().unwrap_unchecked().len() }
+        unsafe { ((self.0.len() - 1) as u32 * LV_LEN as u32) + self.0.last().unwrap_unchecked().len() as u32 }
     }
 
     #[inline]
