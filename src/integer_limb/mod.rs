@@ -577,17 +577,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        #[cfg(debug_assertions)]
-        unsafe {
-            *rev_ptr.add(1).cast::<u8>() = overflowed as u8;
-        }; // this limb is already zeroed for padding, so just set one byte
-
-        #[cfg(not(debug_assertions))]
-        unsafe {
-            // for some reason an overflow check is happening on this addition
-            *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = overflowed as u8; // do the math manually with unchecked addition to remove an overflow check branch 
-        }
-        if !overflowed {
+        if likely(overflowed) {
+            unsafe {
+                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1; // unchecked addition to remove an overflow check branch
+            }
+        } else {
             self.0.pop();
         }
         likely(ever_carried)
