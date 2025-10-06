@@ -226,8 +226,8 @@ impl Limb {
 
     #[inline]
     fn len(&self) -> usize {
-        let zeros = LimbVec::splat(0);
-        let eq_mask = self.0.simd_ne(zeros);
+        const ZEROS: LimbVec = LimbVec::splat(0);
+        let eq_mask = self.0.simd_ne(ZEROS);
         let bitmask = eq_mask.to_bitmask();
         LV_LEN - (bitmask.leading_zeros() as usize - (64 - LV_LEN))
     }
