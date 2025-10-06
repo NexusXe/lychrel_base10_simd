@@ -160,7 +160,7 @@ impl const std::cmp::PartialEq for Limb {
             }
 
             #[cfg(not(debug_assertions))]
-            {
+            unsafe {
                 transmute::<LimbVec, WideVec>(lhs) == transmute::<LimbVec, WideVec>(rhs)
             }
         }
