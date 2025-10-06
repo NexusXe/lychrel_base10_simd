@@ -884,7 +884,7 @@ macro_rules! integer {
 
         for digit in value_str.chars().rev() {
             if !digit.is_digit(10) {
-                panic!("Invalid digit: {}", digit);
+                unreachable!("Invalid digit: {}", digit);
             }
             current_limb_digits
                 .push(digit.to_digit(10).unwrap() as $crate::integer_limb::LimbVecScalar);
