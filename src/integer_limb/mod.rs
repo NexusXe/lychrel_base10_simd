@@ -216,12 +216,7 @@ impl Limb {
 
     #[inline]
     fn has_carries(&self) -> bool {
-        for byte in self.0.as_array() {
-            if *byte >= 10 {
-                return true;
-            }
-        }
-        false
+        self.0.simd_ge(LimbVec::splat(10)).any()
     }
 
     #[inline]
