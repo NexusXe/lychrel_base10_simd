@@ -154,7 +154,15 @@ impl const std::cmp::PartialEq for Limb {
 
         #[inline]
         fn eq_rt(lhs: LimbVec, rhs: LimbVec) -> bool {
+            #[cfg(debug_assertions)]
+            {
             lhs == rhs
+        }
+
+            #[cfg(not(debug_assertions))]
+            {
+                transmute::<LimbVec, WideVec>(lhs) == transmute::<LimbVec, WideVec>(rhs)
+            }
         }
 
         const_eval_select((self.0, other.0), eq_const, eq_rt)
