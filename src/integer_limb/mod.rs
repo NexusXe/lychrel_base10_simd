@@ -283,8 +283,7 @@ impl Limb {
     }
 
     fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits = self.0.as_array();
-        for i in digits.iter().rev() {
+        for i in self.0.reverse().as_array() {
             write!(f, "{i}")?;
         }
         Ok(())
@@ -313,9 +312,8 @@ impl std::ops::Add for Limb {
 
 impl std::fmt::Display for Limb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let digits = self.0.to_array();
-        for i in digits.iter().rev() {
-            if *i > 9 as LimbVecScalar {
+        for i in self.0.reverse().to_array() {
+            if i > 9 as LimbVecScalar {
                 write!(f, "\x1b[31m{i}\x1b[0m")?;
             } else {
                 write!(f, "{i}")?;
