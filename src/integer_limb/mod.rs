@@ -600,7 +600,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // all zeros! Why not just write the whole cache line at once?
                 // This comes with the benefit of this carry being immediately available in cache for the
                 // next time this function is called.
-                *(pad_ptr as *mut __m512i) = u64x8::from_array([1,0,0,0,0,0,0,0]).into();
+                *(pad_ptr as *mut WideVec) = WideVec::from_array([1,0,0,0,0,0,0,0]);
             }
         } else {
             self.0.pop();
