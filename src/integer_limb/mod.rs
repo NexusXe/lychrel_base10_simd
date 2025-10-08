@@ -466,18 +466,18 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 limb.0 = (limb.0 << 4) >> 4;
 
                 let forward_carry = overflowed;
+
+                *limb = *limb + Limb(reversed_limb);
+                for result in limb.0.as_array() {
+                    if *result > 18 {
+                        impossible!("Got impossible addition result");
+                    }
+                }
+
                 const CARRY_MASK_CMP: LimbVec = LimbVec::splat(10);
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
-                    limb.0 = _mm512_add_epi64(limb.0.into(), reversed_limb.into()).into();
-
-                    for result in limb.0.as_array() {
-                        if *result > 18 {
-                            impossible!("Got impossible addition result");
-                        }
-                    }
-
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
@@ -534,14 +534,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    *limb = *limb + Limb(reversed_limb);
-
-                    for result in limb.0.as_array() {
-                        if *result > 18 {
-                            impossible!("Got impossible addition result");
-                        }
-                    }
-
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
 
                     if likely(forward_carry || carry_mask.any()) {
