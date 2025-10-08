@@ -412,6 +412,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         let total_limbs = self.0.len();
+        if total_limbs > 2usize.pow(26) {
+            impossible!("Tried to iterate over an integer with more than 2^26 limbs");
+        }
 
         self.0.push(Limb::new()); // padding
 
@@ -653,6 +656,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         if self.0.is_empty() {
             #[cfg(debug_assertions)]
             impossible!("Tried to get the length of an empty integer");
+        }
+
+        if self.0.len() >= 2usize.pow(26) {
+            impossible!("Tried to get the length of an integer with more than 2^26 limbs");
         }
 
         unsafe {
