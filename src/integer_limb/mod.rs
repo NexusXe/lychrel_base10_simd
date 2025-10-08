@@ -573,12 +573,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
+        let pad_ptr = unsafe{rev_ptr.add(1) as *mut std::ffi::c_void};
+        if unsafe{*(pad_ptr as *const LimbVec) != std::mem::zeroed()} {
+            impossible!("Dirty padding data!");
+        }
+
         if likely(overflowed) {
             unsafe {
-                let pad_ptr = rev_ptr.add(1) as *mut std::ffi::c_void;
-                if *(pad_ptr as *const LimbVec) != LimbVec::splat(0) {
-                    impossible!("Dirty padding data!");
-                }
                 // this write is a rather complex technical point...
                 // If the cache line for the padding is in the CPU cache, a native-sized (qword) write would
                 // most likely be fastest due to not needing a full RMW cycle - it can just blindly write to
@@ -587,8 +588,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // If the cache line *isn't* cached, a smaller 1-byte write wouldn't be faster than anything
                 // else, but is a smaller instruction overall so is a more efficient operation. This padding
                 // data will be accessed again immediately in the next loop, so a short byte write will add
-                // an entry into the store buffer and, whenever the RAM gets around to providing the rest of
-                // the data, it'll get merged and populate the caches.
+                // an entry into the store buffer and whenever the RAM gets around to providing the rest of
+                // the data it'll get merged and populate the caches.
                 //
                 // However, I don't actually know if the data is in cache! It hasn't been accessed in what
                 // might as well be forever (thousands of cache lines have since been passed around)
