@@ -294,6 +294,7 @@ impl Limb {
 }
 
 impl const std::default::Default for Limb {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }
@@ -699,6 +700,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
     }
 
+    #[inline]
     pub fn pack(self) -> Integer<GlobalAllocator> {
         if self.0.is_empty() {
             impossible!("Tried to pack an empty integer");
