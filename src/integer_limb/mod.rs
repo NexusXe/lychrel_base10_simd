@@ -251,6 +251,7 @@ impl Limb {
         Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
     }
 
+    #[inline]
     fn pack(self, other: Self) -> Self {
         debug_assert!(!self.has_carries());
         debug_assert!(!other.has_carries());
@@ -573,8 +574,20 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        let pad_ptr = unsafe{rev_ptr.add(1) as *mut std::ffi::c_void};
-        if unsafe{*(pad_ptr as *const LimbVec) != std::mem::zeroed()} {
+        // unsafe {
+        //     // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
+        //     const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
+
+        //     for i in 0..L1C {
+        //         _mm_prefetch(limbs_ptr.add(i) as *const _, _MM_HINT_ET0);
+        //     }
+
+        //     // in addition to the first limbs, the last ones are also accessed first
+        //     // however, they are likely still in cache
+        // }
+
+        let pad_ptr = unsafe { rev_ptr.add(1) as *mut std::ffi::c_void };
+        if unsafe { *(pad_ptr as *const LimbVec) != std::mem::zeroed() } {
             impossible!("Dirty padding data!");
         }
 
@@ -600,11 +613,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // all zeros! Why not just write the whole cache line at once?
                 // This comes with the benefit of this carry being immediately available in cache for the
                 // next time this function is called.
-                *(pad_ptr as *mut WideVec) = WideVec::from_array([1,0,0,0,0,0,0,0]);
+                *(pad_ptr as *mut WideVec) = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
         } else {
             self.0.pop();
         }
+
         likely(ever_carried)
     }
 

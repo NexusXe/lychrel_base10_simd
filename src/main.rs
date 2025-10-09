@@ -458,13 +458,14 @@ SIMD Lychrel Number Search
 
             println!("limit: {stop_at:}");
 
-            println!("{}", "-".repeat(32));
-
             let (tx, rx) = mpsc::channel::<iterate::StatusReport>();
 
-            let iteration_handle = thread::spawn(move || {
-                iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
-            });
+            let iteration_handle = {
+                println!("{}", "-".repeat(32));
+                thread::spawn(move || {
+                    iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
+                })
+            };
 
             let mut step_time = Instant::now();
 
