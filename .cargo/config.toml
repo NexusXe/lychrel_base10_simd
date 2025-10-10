@@ -1,5 +1,5 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic --mattr=help"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
 
 [unstable]
 # build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
