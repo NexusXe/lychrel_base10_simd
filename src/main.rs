@@ -68,7 +68,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allocator = Global;
 
     let mut starting_iteration: usize = 1;
-    let args: Vec<String> = std::env::args().collect();    
+    let args: Vec<String> = std::env::args().collect();
 
     let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(
         |_| DEFAULT_CHECKPOINT_DIR.to_string(),

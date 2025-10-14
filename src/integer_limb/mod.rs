@@ -205,7 +205,7 @@ impl const From<LimbVec> for Limb {
 impl Limb {
     #[inline]
     #[must_use]
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self(LimbVec::splat(0))
     }
 
@@ -217,7 +217,7 @@ impl Limb {
             if let Some(digit) = c.to_digit(10) {
                 digits[i] = digit as LimbVecScalar;
             } else {
-                panic!("Invalid digit in input value: {c}");
+                impossible!("Invalid digit in input value: {c}");
             }
         }
         Self(digits)
@@ -226,11 +226,6 @@ impl Limb {
     #[inline]
     fn has_carries(&self) -> bool {
         self.0.simd_ge(LimbVec::splat(10)).any()
-    }
-
-    #[inline]
-    fn reverse(self) -> Self {
-        Self(self.0.reverse())
     }
 
     #[inline]
@@ -375,7 +370,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         output_vec.clear();
 
         for limb in self.0.iter().rev() {
-            output_vec.push(limb.reverse());
+            output_vec.push(Limb(limb.0.reverse()));
         }
         // at this point, the contents of the limbs and the order of the limbs are reversed
         // however, the digits are misaligned
@@ -728,7 +723,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         #[cfg(debug_assertions)]
-        return {
+        {
             let mut i: usize = 0;
             while i < self.0.len() {
                 if self.0.as_slice()[i].is_empty() {
@@ -738,7 +733,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 }
             }
             true
-        };
+        }
 
         #[cfg(not(debug_assertions))]
         {
