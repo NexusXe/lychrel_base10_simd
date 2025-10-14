@@ -18,6 +18,7 @@ use std::simd::prelude::*;
 #[cfg(any(
     target_feature = "avx512f",
     target_feature = "sve",
+    target_arch = "powerpc64",
     feature = "64-byte-limbs"
 ))] // 512-bit vectors
 mod values {
@@ -574,24 +575,25 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        // unsafe {
-        //     // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
-        //     const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
+        unsafe {
+            // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
+            const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
 
-        //     for i in 0..L1C {
-        //         _mm_prefetch(limbs_ptr.add(i) as *const _, _MM_HINT_ET0);
-        //     }
+            for i in 0..L1C {
+                _mm_prefetch(limbs_ptr.add(i) as *const _, _MM_HINT_ET0);
+            }
 
-        //     // in addition to the first limbs, the last ones are also accessed first
-        //     // however, they are likely still in cache
-        // }
+            // in addition to the first limbs, the last ones are also accessed first
+            // however, they are likely still in cache
+        }
 
-        let pad_ptr = unsafe { rev_ptr.add(1) as *mut std::ffi::c_void };
+        let pad_ptr = unsafe { rev_ptr.add(1).cast::<std::ffi::c_void>() };
         if unsafe { *(pad_ptr as *const LimbVec) != std::mem::zeroed() } {
             impossible!("Dirty padding data!");
         }
 
         if likely(overflowed) {
+            #[cfg(target_feature = "avx512f")]
             unsafe {
                 // this write is a rather complex technical point...
                 // If the cache line for the padding is in the CPU cache, a native-sized (qword) write would
@@ -613,7 +615,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // all zeros! Why not just write the whole cache line at once?
                 // This comes with the benefit of this carry being immediately available in cache for the
                 // next time this function is called.
-                *(pad_ptr as *mut WideVec) = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+                *pad_ptr.cast::<WideVec>() = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+            }
+
+            #[cfg(not(target_feature = "avx512f"))]
+            unsafe {
+                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
             }
         } else {
             self.0.pop();
