@@ -396,8 +396,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             [0; LV_LEN]
         );
 
-        let right_bound = output_slice.len() as u32 - (LV_LEN as u8 - skip_len) as u32;
-        if !(right_bound - skip_len as u32).is_multiple_of(LV_LEN as u32) {
+        let right_bound = output_slice.len() as u32 - u32::from(LV_LEN as u8 - skip_len);
+        if !(right_bound - u32::from(skip_len)).is_multiple_of(LV_LEN as u32) {
             impossible!("Reversal memory copy is not a multiple of 64 bytes");
         }
         output_slice.copy_within(skip_len as usize..right_bound as usize, 0);
@@ -542,9 +542,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 {
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
 
-                    if likely(forward_carry || carry_mask.any()) {
+                    if likely(carry_mask.any() || forward_carry) {
                         ever_carried = true;
-                        overflowed = carry_mask.to_bitmask() >> (LV_LEN - 1) != 0;
+                        overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
                         let subtracted_limb = limb.0 - CARRY_MASK_CMP;
                         limb.0 = carry_mask.select(subtracted_limb, limb.0);
@@ -564,9 +564,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 .shift_elements_right::<1>(false)
                                 .select(added_limb, limb.0);
 
-                            if carry_mask.to_bitmask() >> (LV_LEN - 1) != 0 {
+                            if likely(carry_mask.test_unchecked(LV_LEN - 1)) {
                                 overflowed = true;
-                            } else if !carry_mask.any() {
+                            } else if std::hint::unlikely(!carry_mask.any()) {
                                 break;
                             }
                         }
@@ -711,7 +711,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         unsafe {
             ((self.0.len() - 1) as u32 * LV_LEN as u32)
-                + self.0.last().unwrap_unchecked().len() as u32
+                + u32::from(self.0.last().unwrap_unchecked().len())
         }
     }
 
@@ -774,7 +774,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[must_use]
-    pub fn unpack(self, allocator: T) -> Integer<T> {
+    pub fn unpack(self, allocator: T) -> Self {
         if self.0.is_empty() {
             impossible!("Tried to unpack an empty integer");
         }
@@ -791,7 +791,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        Integer::<T>(output)
+        Self(output)
     }
 
     #[inline]
@@ -805,12 +805,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn from_bytes(input: &[[LimbVecScalar; LV_LEN]], allocator: T) -> Integer<T> {
+    pub fn from_bytes(input: &[[LimbVecScalar; LV_LEN]], allocator: T) -> Self {
         let mut output = Vec::with_capacity_in(input.len(), allocator);
         for limb in input {
             output.push(Limb::from_bytes(*limb));
         }
-        Integer(output)
+        Self(output)
     }
 
     #[inline]
@@ -823,8 +823,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
     #[must_use]
     #[inline]
-    pub fn from_checkpoint(input: &Checkpoint, allocator: T) -> (Integer<T>, usize) {
-        let chopped_data = Integer::<T>::chop(&input.integer).unwrap();
+    pub fn from_checkpoint(input: &Checkpoint, allocator: T) -> (Self, usize) {
+        let chopped_data = Self::chop(&input.integer).unwrap();
         let packed_integer = Self::from_bytes(&chopped_data, allocator);
         let integer = packed_integer.unpack(allocator);
         (integer, input.iteration)

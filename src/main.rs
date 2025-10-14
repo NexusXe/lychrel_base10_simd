@@ -12,6 +12,7 @@
 #![feature(cfg_overflow_checks)]
 #![feature(const_default)]
 #![feature(alloc_layout_extra)]
+#![feature(stmt_expr_attributes)]
 #![deny(clippy::all)]
 
 pub mod integer_limb;
@@ -46,6 +47,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     const LIMIT_SHORT: usize = 603_567;
     const LIMIT_LONG_BENCH: usize = LIMIT_SHORT * 2;
     const LIMIT_PROFILING: usize = LIMIT_SHORT * 5;
+    const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
 
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
@@ -66,9 +68,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allocator = Global;
 
     let mut starting_iteration: usize = 1;
-    let args: Vec<String> = std::env::args().collect();
-
-    const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
+    let args: Vec<String> = std::env::args().collect();    
 
     let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(
         |_| DEFAULT_CHECKPOINT_DIR.to_string(),
@@ -602,14 +602,14 @@ SIMD Lychrel Number Search
                         unsafe {
                             fdiv_fast(
                                 tetrahexacontabytes_per_second,
-                                ((1024u32 * 1024 * 1024) / LV_BYTES as u32) as f64,
+                                f64::from((1024u32 * 1024 * 1024) / LV_BYTES as u32),
                             )
                         },
                         unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
                         unsafe {
                             fdiv_fast(
                                 tetrahexacontabytes_per_second,
-                                (1_000_000_000u32 / 64) as f64,
+                                f64::from(1_000_000_000u32 / 64),
                             )
                         },
                     );
