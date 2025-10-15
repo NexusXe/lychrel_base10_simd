@@ -570,7 +570,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
         unsafe {
             // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
             const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write

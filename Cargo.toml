@@ -12,6 +12,7 @@ no-avx = []
 64-byte-limbs = []
 1g-pages = []
 global-alloc = []
+no-prefetch = []
 
 [target.'cfg(target_family = "windows")'.dependencies]
 windows = { version = "0", features = [
