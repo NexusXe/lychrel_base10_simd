@@ -534,7 +534,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
-                    if likely((carry_mask != 0) || forward_carry) {
+                    if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
@@ -580,6 +580,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 break;
                             }
                         }
+                    } else {
+                        cold_path();
                     }
                 }
 
@@ -587,7 +589,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 {
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
 
-                    if likely(carry_mask.any() || forward_carry) {
+                    if likely(carry_mask.any()) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
