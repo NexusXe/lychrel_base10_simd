@@ -637,7 +637,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             jns 2b # 2 bytes; shares uop with add instruction
             "#,
             limbs_ptr = in(reg) limbs_ptr,
-            i = in(reg) 0,
+            i = inout(reg) 0 => _,
             options(nostack, nomem));
 
             // in addition to the first limbs, the last ones are also accessed first
