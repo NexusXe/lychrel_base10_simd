@@ -33,7 +33,7 @@ rand = "0.9"
 embed-resource = "3"
 
 [profile.release]
-strip = "debuginfo"
+strip = true
 opt-level = 3
 debug = false
 debug-assertions = false
@@ -44,7 +44,7 @@ panic = "abort"
 rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 
 [profile.release.build-override]
-strip = "debuginfo"
+strip = true
 opt-level = 3
 debug = false
 debug-assertions = false
