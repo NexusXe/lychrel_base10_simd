@@ -1,4 +1,4 @@
-cargo-features = ["profile-rustflags"]
+cargo-features = ["profile-rustflags", "panic-immediate-abort"]
 
 [package]
 name = "lychrel_base10_simd"
