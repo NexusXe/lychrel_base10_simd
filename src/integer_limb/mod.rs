@@ -583,8 +583,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             // however, they are likely still in cache
         }
 
-        let pad_ptr = unsafe { rev_ptr.add(1).cast::<std::ffi::c_void>() };
-        if unsafe { *(pad_ptr as *const LimbVec) != std::mem::zeroed() } {
+        let pad_ptr = unsafe { rev_ptr.add(1) as *mut WideVec };
+
+        if unsafe { *pad_ptr != std::mem::zeroed() } {
             impossible!("Dirty padding data!");
         }
 
@@ -611,7 +612,17 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // all zeros! Why not just write the whole cache line at once?
                 // This comes with the benefit of this carry being immediately available in cache for the
                 // next time this function is called.
-                *pad_ptr.cast::<WideVec>() = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+                debug_assert_eq!(
+                    LimbVec::from_array([
+                        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    ]),
+                    std::mem::transmute::<WideVec, LimbVec>(WideVec::from_array([
+                        1, 0, 0, 0, 0, 0, 0, 0
+                    ]))
+                );
+                *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
 
             #[cfg(not(target_feature = "avx512f"))]
