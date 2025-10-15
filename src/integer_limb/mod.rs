@@ -625,7 +625,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
         #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
         unsafe {
-            // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
+            // prefetch the first 16 limbs since, for integers larger than L3$, they've probably been evicted by now
             // prefetching in asm because I don't want this loop unrolled
             // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
             // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
