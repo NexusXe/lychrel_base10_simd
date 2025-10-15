@@ -237,14 +237,66 @@ impl Limb {
     }
 
     #[inline(always)]
-    unsafe fn shl_wide<const N: u64>(&self) -> Self {
-        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) << N) })
+    /// ## Safety
+    /// N must be <= 8
+    const unsafe fn shl_wide<const N: u8>(&self) -> Self {
+        if N > 8 {
+            panic!("Limb::shr_wide() must not be used with N > 8");
+        }
+
+        fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
+            unsafe {
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as u64)
+            }
+        }
+
+        const fn shl_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
+            let mut i: usize = 0;
+            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            while i < WV_LEN {
+                output[i] <<= N;
+                i += 1;
+            }
+            unsafe { transmute(WideVec::from_array(output)) }
+        }
+
+        Self(const_eval_select(
+            (self.0,),
+            shl_wide_const::<N>,
+            shl_wide_rt::<N>,
+        ))
     }
 
     #[allow(dead_code)]
     #[inline(always)]
-    unsafe fn shr_wide<const N: u64>(&self) -> Self {
-        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
+    /// ## Safety
+    /// N must be <= 8
+    const unsafe fn shr_wide<const N: u8>(&self) -> Self {
+        if N > 8 {
+            panic!("Limb::shr_wide() must not be used with N > 8");
+        }
+
+        fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
+            unsafe {
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as u64)
+            }
+        }
+
+        const fn shr_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
+            let mut i: usize = 0;
+            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            while i < WV_LEN {
+                output[i] >>= N;
+                i += 1;
+            }
+            unsafe { transmute(WideVec::from_array(output)) }
+        }
+
+        Self(const_eval_select(
+            (self.0,),
+            shr_wide_const::<N>,
+            shr_wide_rt::<N>,
+        ))
     }
 
     #[inline]
@@ -256,8 +308,7 @@ impl Limb {
         debug_assert_eq!(LimbVec::splat(0), other.0 & LimbVec::splat(0xF0));
 
         unsafe {
-            let other_u64: WideVec = transmute(other.0);
-            let other_shifted: LimbVec = transmute(other_u64 << 4);
+            let other_shifted: LimbVec = other.shl_wide::<4>().0;
             Self(self.0 ^ other_shifted)
         }
     }
