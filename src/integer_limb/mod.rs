@@ -571,13 +571,25 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
         unsafe {
             // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
             const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
-
-            for i in 0..L1C {
-                _mm_prefetch(limbs_ptr.add(i) as *const _, _MM_HINT_ET0);
-            }
+            // prefetching in asm because I don't want this loop unrolled
+            // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
+            // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
+            std::arch::asm!(r#"
+            # implicit xor eax, eax; 2 bytes
+            2:
+            prefetchw byte ptr [{limbs_ptr} + rax * 8] # 4 bytes
+            add eax, 8 # 2 bytes
+            cmp al, {LIMIT} # 2 bytes
+            jne 2b # 2 bytes
+            "#,
+            limbs_ptr = in(reg) limbs_ptr,
+            in("rax") 0, // use rax so the add and cmp insns are only 2 bytes
+            LIMIT = const L1C * 8,
+            options(nostack, nomem));
 
             // in addition to the first limbs, the last ones are also accessed first
             // however, they are likely still in cache
