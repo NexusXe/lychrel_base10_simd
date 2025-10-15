@@ -633,7 +633,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             # implicit xor eax, eax; 2 bytes
             2:
             prefetchw byte ptr [{limbs_ptr} + rax * 8] # 4 bytes
-            add eax, 8 # 2 bytes
+            add al, 8 # 2 bytes
             cmp al, {LIMIT} # 2 bytes
             jne 2b # 2 bytes
             "#,
