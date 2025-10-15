@@ -244,12 +244,14 @@ impl Limb {
             panic!("Limb::shr_wide() must not be used with N > 8");
         }
 
+        #[inline(always)]
         fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
                 transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as u64)
             }
         }
 
+        #[inline(always)]
         const fn shl_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
             let mut i: usize = 0;
             let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
@@ -276,12 +278,14 @@ impl Limb {
             panic!("Limb::shr_wide() must not be used with N > 8");
         }
 
+        #[inline(always)]
         fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
                 transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as u64)
             }
         }
 
+        #[inline(always)]
         const fn shr_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
             let mut i: usize = 0;
             let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
