@@ -511,13 +511,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             unsafe {
                 let limb_ptr = &raw const limb.0;
 
-                #[cfg(debug_assertions)]
                 let reversed_limb: LimbVec =
                     read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
-
-                #[cfg(not(debug_assertions))]
-                let reversed_limb: LimbVec =
-                    read_unaligned((limb_ptr as usize + skip_len as usize) as *const LimbVec) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
