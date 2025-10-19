@@ -570,14 +570,27 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[allow(clippy::pointers_in_nomem_asm_block)]
+        // pointer being passed in is not actually accessed
         unsafe {
             // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
             const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
-
-            for i in 0..L1C {
-                _mm_prefetch(limbs_ptr.add(i) as *const _, _MM_HINT_ET0);
-            }
+            const SCALE: usize = 8;
+            std::arch::asm!(r#"
+            2:
+            kmovq k0, k0
+            prefetchw byte ptr [{limb_base} + {i:r} * {SCALE}]
+            add {i:x}, {LIMB_SIZE}
+            cmp {i:x}, {LIMIT}
+            ds jne 2b
+            "#,
+            limb_base = in(reg) limbs_ptr,
+            i = in(reg) 0,
+            LIMB_SIZE = const LV_LEN/SCALE,
+            LIMIT = const ((L1C * 64)/SCALE).to_ne_bytes()[0],
+            SCALE = const SCALE,
+            options(nostack, nomem));
 
             // in addition to the first limbs, the last ones are also accessed first
             // however, they are likely still in cache
