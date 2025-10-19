@@ -237,14 +237,70 @@ impl Limb {
     }
 
     #[inline(always)]
-    unsafe fn shl_wide<const N: u64>(&self) -> Self {
-        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) << N) })
+    /// ## Safety
+    /// N must be <= 8
+    const unsafe fn shl_wide<const N: u8>(&self) -> Self {
+        if N > 8 {
+            panic!("Limb::shr_wide() must not be used with N > 8");
+        }
+
+        #[inline(always)]
+        fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
+            unsafe {
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as u64)
+            }
+        }
+
+        #[inline(always)]
+        const fn shl_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
+            let mut i: usize = 0;
+            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            while i < WV_LEN {
+                output[i] <<= N;
+                i += 1;
+            }
+            unsafe { transmute(WideVec::from_array(output)) }
+        }
+
+        Self(const_eval_select(
+            (self.0,),
+            shl_wide_const::<N>,
+            shl_wide_rt::<N>,
+        ))
     }
 
     #[allow(dead_code)]
     #[inline(always)]
-    unsafe fn shr_wide<const N: u64>(&self) -> Self {
-        Self(unsafe { transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(self.0) >> N) })
+    /// ## Safety
+    /// N must be <= 8
+    const unsafe fn shr_wide<const N: u8>(&self) -> Self {
+        if N > 8 {
+            panic!("Limb::shr_wide() must not be used with N > 8");
+        }
+
+        #[inline(always)]
+        fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
+            unsafe {
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as u64)
+            }
+        }
+
+        #[inline(always)]
+        const fn shr_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
+            let mut i: usize = 0;
+            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            while i < WV_LEN {
+                output[i] >>= N;
+                i += 1;
+            }
+            unsafe { transmute(WideVec::from_array(output)) }
+        }
+
+        Self(const_eval_select(
+            (self.0,),
+            shr_wide_const::<N>,
+            shr_wide_rt::<N>,
+        ))
     }
 
     #[inline]
@@ -256,8 +312,7 @@ impl Limb {
         debug_assert_eq!(LimbVec::splat(0), other.0 & LimbVec::splat(0xF0));
 
         unsafe {
-            let other_u64: WideVec = transmute(other.0);
-            let other_shifted: LimbVec = transmute(other_u64 << 4);
+            let other_shifted: LimbVec = other.shl_wide::<4>().0;
             Self(self.0 ^ other_shifted)
         }
     }
@@ -456,13 +511,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             unsafe {
                 let limb_ptr = &raw const limb.0;
 
-                #[cfg(debug_assertions)]
                 let reversed_limb: LimbVec =
                     read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
-
-                #[cfg(not(debug_assertions))]
-                let reversed_limb: LimbVec =
-                    read_unaligned((limb_ptr as usize + skip_len as usize) as *const LimbVec) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
 
@@ -484,7 +534,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
                     let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
 
-                    if likely((carry_mask != 0) || forward_carry) {
+                    if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
@@ -530,6 +580,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 break;
                             }
                         }
+                    } else {
+                        cold_path();
                     }
                 }
 
@@ -537,7 +589,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 {
                     let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
 
-                    if likely(carry_mask.any() || forward_carry) {
+                    if likely(carry_mask.any()) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
@@ -570,61 +622,49 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        #[allow(clippy::pointers_in_nomem_asm_block)]
-        // pointer being passed in is not actually accessed
+        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
         unsafe {
-            // prefetch the first 64 limbs since, for integers larger than L3$, they've probably been evicted by now
-            const L1C: usize = 16; // 1024 bytes into 48 KiB L1d$ w/ intent to write
-            const SCALE: usize = 8;
+            // prefetch the first 16 limbs since, for integers larger than L3$, they've probably been evicted by now
+            // prefetching in asm because I don't want this loop unrolled
+            // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
+            // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
             std::arch::asm!(r#"
+            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
             2:
-            kmovq k0, k0
-            prefetchw byte ptr [{limb_base} + {i:r} * {SCALE}]
-            add {i:x}, {LIMB_SIZE}
-            cmp {i:x}, {LIMIT}
-            ds jne 2b
+            prefetchw byte ptr [{limbs_ptr} + {i:r} * 8] # 4 bytes, 1 uop
+            add {i:l}, 8 # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
+            jns 2b # 2 bytes; shares uop with add instruction
             "#,
-            limb_base = in(reg) limbs_ptr,
-            i = in(reg) 0,
-            LIMB_SIZE = const LV_LEN/SCALE,
-            LIMIT = const ((L1C * 64)/SCALE).to_ne_bytes()[0],
-            SCALE = const SCALE,
+            limbs_ptr = in(reg) limbs_ptr,
+            i = inout(reg) 0 => _,
             options(nostack, nomem));
 
             // in addition to the first limbs, the last ones are also accessed first
             // however, they are likely still in cache
         }
 
-        let pad_ptr = unsafe { rev_ptr.add(1).cast::<std::ffi::c_void>() };
-        if unsafe { *(pad_ptr as *const LimbVec) != std::mem::zeroed() } {
+        let pad_ptr = unsafe { rev_ptr.add(1) as *mut WideVec };
+
+        if unsafe { *pad_ptr != std::mem::zeroed() } {
             impossible!("Dirty padding data!");
         }
 
         if likely(overflowed) {
             #[cfg(target_feature = "avx512f")]
             unsafe {
-                // this write is a rather complex technical point...
-                // If the cache line for the padding is in the CPU cache, a native-sized (qword) write would
-                // most likely be fastest due to not needing a full RMW cycle - it can just blindly write to
-                // the memory.
-                //
-                // If the cache line *isn't* cached, a smaller 1-byte write wouldn't be faster than anything
-                // else, but is a smaller instruction overall so is a more efficient operation. This padding
-                // data will be accessed again immediately in the next loop, so a short byte write will add
-                // an entry into the store buffer and whenever the RAM gets around to providing the rest of
-                // the data it'll get merged and populate the caches.
-                //
-                // However, I don't actually know if the data is in cache! It hasn't been accessed in what
-                // might as well be forever (thousands of cache lines have since been passed around)
-                // But, it is one cache line after a perfectly linear access of thousands of cache lines,
-                // so it may well have been speculatively prefetched from the add-carry loop.
-                //
-                // But why would I even want to read the data from memory? I already know what it is! It's
-                // all zeros! Why not just write the whole cache line at once?
-                // This comes with the benefit of this carry being immediately available in cache for the
-                // next time this function is called.
-                *pad_ptr.cast::<WideVec>() = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+                // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
+                debug_assert_eq!(
+                    LimbVec::from_array([
+                        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    ]),
+                    std::mem::transmute::<WideVec, LimbVec>(WideVec::from_array([
+                        1, 0, 0, 0, 0, 0, 0, 0
+                    ]))
+                );
+                *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
 
             #[cfg(not(target_feature = "avx512f"))]

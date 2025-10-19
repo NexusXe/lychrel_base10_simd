@@ -1,4 +1,4 @@
-cargo-features = ["profile-rustflags"]
+cargo-features = ["profile-rustflags", "panic-immediate-abort"]
 
 [package]
 name = "lychrel_base10_simd"
@@ -12,6 +12,7 @@ no-avx = []
 64-byte-limbs = []
 1g-pages = []
 global-alloc = []
+no-prefetch = []
 
 [target.'cfg(target_family = "windows")'.dependencies]
 windows = { version = "0", features = [
@@ -32,7 +33,7 @@ rand = "0.9"
 embed-resource = "3"
 
 [profile.release]
-strip = "debuginfo"
+strip = true
 opt-level = 3
 debug = false
 debug-assertions = false
@@ -43,7 +44,7 @@ panic = "abort"
 rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 
 [profile.release.build-override]
-strip = "debuginfo"
+strip = true
 opt-level = 3
 debug = false
 debug-assertions = false
@@ -55,7 +56,13 @@ rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 inherits = "release"
 strip = false
 debug = true
-rustflags = ["-C", "force-frame-pointers=yes"]
+rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
+
+[profile.profiling.build-override]
+inherits = "release"
+strip = false
+debug = true
+rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
 
 [profile.dev]
 opt-level = 1
@@ -68,8 +75,8 @@ rustflags = ["-C", "force-frame-pointers=yes"]
 
 [profile.test]
 inherits = "dev"
-opt-level = 2
+opt-level = 1
 overflow-checks = true
 debug-assertions = true
-lto = true
+lto = false
 rustflags = ["-C", "force-frame-pointers=yes"]

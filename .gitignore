@@ -15,3 +15,5 @@ compare/
 .cargo/config.toml
 
 *.ps1
+*.svg
+perf*
