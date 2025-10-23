@@ -460,6 +460,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
 
+        // quick and dirty configuration for my specific devices
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        const CACHE_SIZE: usize = 1024*1024*16; // 16 MiB
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        const CACHE_SIZE: usize = 1024*1024*96; // 96 MiB
+
         if self.0.is_empty() {
             impossible!("Tried to reverse and add empty integer");
         }
@@ -478,19 +485,42 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             as *mut LimbVec;
 
         // instead of reversing into a seperate vector, reverse and pack into the original limb
-        for i in 0..total_limbs.div_ceil(2) {
-            unsafe {
-                let left_limb_ptr = limbs_ptr.add(i);
-                let right_limb_ptr = rev_ptr.sub(i);
+        if likely(total_limbs > CACHE_SIZE / LV_BYTES) && is_x86_feature_detected!("avx512f") {
+            for i in 0..total_limbs.div_ceil(2) {
+                unsafe {
+                    let left_limb_ptr = limbs_ptr.add(i);
+                    let right_limb_ptr = rev_ptr.sub(i);
 
-                let lhs = &mut *left_limb_ptr;
-                let rhs = &mut *right_limb_ptr;
+                    let lhs = &mut *left_limb_ptr;
+                    let rhs = &mut *right_limb_ptr;
 
-                // shift these as qwords since byte-wise shifts use gfni
-                let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
-                let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
-                *lhs = lhs_output;
-                *rhs = rhs_output;
+                    // shift these as qwords since byte-wise shifts use gfni
+                    let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
+                    let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
+                    // so this still compiles on non-x86 targets
+                    // TODO: this is sort of a hack
+                    #[cfg(target_feature = "avx512f")]
+                    {
+                        _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
+                        _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
+                    }
+                }
+            }
+        } else {
+            for i in 0..total_limbs.div_ceil(2) {
+                unsafe {
+                    let left_limb_ptr = limbs_ptr.add(i);
+                    let right_limb_ptr = rev_ptr.sub(i);
+
+                    let lhs = &mut *left_limb_ptr;
+                    let rhs = &mut *right_limb_ptr;
+
+                    // shift these as qwords since byte-wise shifts use gfni
+                    let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
+                    let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
+                    *left_limb_ptr = lhs_output;
+                    *right_limb_ptr = rhs_output;
+                }
             }
         }
 
