@@ -671,7 +671,8 @@ SIMD Lychrel Number Search
             // try to read from the file
             let file = std::fs::read(file_path)?;
 
-            let data: Vec<[LimbVecScalar; LV_LEN]> = Integer::<Global>::chop(&file).unwrap_or_else(|| {
+            let data: Vec<[LimbVecScalar; LV_LEN]> =
+                Integer::<Global>::chop(&file).unwrap_or_else(|| {
                     eprintln!("\x1b[1;31merror\x1b[0m: file length is not a multiple of 64 bytes");
                     std::process::exit(1);
                 });

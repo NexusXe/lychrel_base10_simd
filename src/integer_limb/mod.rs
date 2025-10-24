@@ -462,10 +462,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         // quick and dirty configuration for my specific devices
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        const CACHE_SIZE: usize = 1024*1024*16; // 16 MiB
+        const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        const CACHE_SIZE: usize = 1024*1024*96; // 96 MiB
+        const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
 
         if self.0.is_empty() {
             impossible!("Tried to reverse and add empty integer");
@@ -485,18 +485,18 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             as *mut LimbVec;
 
         // instead of reversing into a seperate vector, reverse and pack into the original limb
+        // branch like this so the smaller-than-cache variant still gets unrolled
         if likely(total_limbs > CACHE_SIZE / LV_BYTES) && is_x86_feature_detected!("avx512f") {
             for i in 0..total_limbs.div_ceil(2) {
                 unsafe {
                     let left_limb_ptr = limbs_ptr.add(i);
                     let right_limb_ptr = rev_ptr.sub(i);
 
-                    let lhs = &mut *left_limb_ptr;
-                    let rhs = &mut *right_limb_ptr;
-
                     // shift these as qwords since byte-wise shifts use gfni
-                    let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
-                    let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
+                    let lhs_output =
+                        *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
+                    let rhs_output =
+                        *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
                     // so this still compiles on non-x86 targets
                     // TODO: this is sort of a hack
                     #[cfg(target_feature = "avx512f")]
@@ -512,12 +512,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let left_limb_ptr = limbs_ptr.add(i);
                     let right_limb_ptr = rev_ptr.sub(i);
 
-                    let lhs = &mut *left_limb_ptr;
-                    let rhs = &mut *right_limb_ptr;
-
                     // shift these as qwords since byte-wise shifts use gfni
-                    let lhs_output = *lhs | Limb(rhs.reverse()).shl_wide::<4>().0;
-                    let rhs_output = *rhs | Limb(lhs.reverse()).shl_wide::<4>().0;
+                    let lhs_output =
+                        *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
+                    let rhs_output =
+                        *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
+
                     *left_limb_ptr = lhs_output;
                     *right_limb_ptr = rhs_output;
                 }
@@ -662,14 +662,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             std::arch::asm!(r#"
             # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
             2:
-            prefetchw byte ptr [{limbs_ptr} + {i:r} * 8] # 4 bytes, 1 uop
+            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8] # 4 bytes, 1 uop
             add {i:l}, 8 # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
             jns 2b # 2 bytes; shares uop with add instruction
             "#,
             limbs_ptr = in(reg) limbs_ptr,
             i = inout(reg) 0 => _,
             options(nostack, nomem));
-
             // in addition to the first limbs, the last ones are also accessed first
             // however, they are likely still in cache
         }
