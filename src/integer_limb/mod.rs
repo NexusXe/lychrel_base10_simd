@@ -231,9 +231,32 @@ impl Limb {
     #[inline]
     fn len(&self) -> u8 {
         const ZEROS: LimbVec = LimbVec::splat(0);
-        let eq_mask = self.0.simd_ne(ZEROS);
-        let bitmask = eq_mask.to_bitmask();
-        LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
+
+        #[allow(unused)]
+        #[inline(always)]
+        fn len_portable(input: &Limb) -> u8 {
+            let eq_mask = input.0.simd_ne(ZEROS);
+            let bitmask = eq_mask.to_bitmask();
+            LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
+        }
+
+        #[cfg(target_feature = "avx512bw")]
+        #[inline(always)]
+        fn len_avx512bw(input: &Limb) -> u8 {
+            unsafe {
+                let bitmask = _mm512_cmpneq_epu8_mask(input.0.into(), ZEROS.into());
+                LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
+            }
+        }
+
+        #[cfg(target_feature = "avx512bw")]
+        {
+            debug_assert_eq!(len_portable(self), len_avx512bw(self));
+            len_avx512bw(self)
+        }
+
+        #[cfg(not(target_feature = "avx512bw"))]
+        len_portable(self)
     }
 
     #[inline(always)]
@@ -703,7 +726,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         } else {
             self.0.pop();
         }
-
         likely(ever_carried)
     }
 
