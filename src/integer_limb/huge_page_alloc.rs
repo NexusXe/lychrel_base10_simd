@@ -181,6 +181,7 @@ unsafe impl Allocator for HugePageAllocator {
                 Some(&mut [extended_parameter_1, extended_parameter_2]),
             );
 
+            #[cfg(debug_assertions)]
             if ptr.is_null() {
                 let error = windows::core::Error::from_thread();
                 eprintln!("HugePageAlloc failed: {error}");
@@ -217,6 +218,7 @@ unsafe impl Allocator for HugePageAllocator {
         let size = layout.size().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
         let ptr = unsafe { aligned_alloc(alignment, size) };
 
+        #[cfg(debug_assertions)]
         if ptr.is_null() {
             return Err(AllocError);
         }
