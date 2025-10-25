@@ -221,13 +221,12 @@ unsafe impl Allocator for HugePageAllocator {
             return Err(AllocError);
         }
 
-        {
-            let result = unsafe { posix_madvise(ptr, size, MADV_HUGEPAGE) };
-            if result != 0 {
-                unsafe { free(ptr) };
-                return Err(AllocError);
-            }
+        let result = unsafe { posix_madvise(ptr, size, MADV_HUGEPAGE) };
+        if result != 0 && cfg!(debug_assertions) {
+            unsafe { free(ptr) };
+            return Err(AllocError);
         }
+
         if let Some(output) = ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr as *mut u8, size))
         {
             Ok(output)
