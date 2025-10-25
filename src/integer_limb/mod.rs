@@ -243,7 +243,7 @@ impl Limb {
         fn len_portable(input: &Limb) -> u8 {
             let eq_mask = input.0.simd_ne(ZEROS);
             let bitmask = eq_mask.to_bitmask();
-            LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
+            64 - bitmask.leading_zeros() as u8
         }
 
         #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
@@ -251,7 +251,7 @@ impl Limb {
         fn len_avx512bw(input: &Limb) -> u8 {
             unsafe {
                 let bitmask = _mm512_cmpneq_epu8_mask(input.0.into(), ZEROS.into());
-                LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
+                64 - bitmask.leading_zeros() as u8
             }
         }
 
