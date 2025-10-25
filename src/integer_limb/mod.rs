@@ -277,7 +277,7 @@ impl Limb {
         #[inline(always)]
         const fn shl_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
             let mut i: usize = 0;
-            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            let mut output = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
             while i < WV_LEN {
                 output[i] <<= N;
                 i += 1;
@@ -311,7 +311,7 @@ impl Limb {
         #[inline(always)]
         const fn shr_wide_const<const N: u8>(input: LimbVec) -> LimbVec {
             let mut i: usize = 0;
-            let mut output: [u64; 8] = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
+            let mut output = unsafe { transmute::<LimbVec, WideVec>(input) }.to_array();
             while i < WV_LEN {
                 output[i] >>= N;
                 i += 1;
@@ -440,6 +440,7 @@ impl Checkpoint {
 impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
+        cold_path();
         if self.0.is_empty() {
             impossible!("Tried to reverse an empty integer");
         }
@@ -730,6 +731,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
+    #[cfg(debug_assertions)]
     pub fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
             impossible!("Tried to show differences between empty integers");
