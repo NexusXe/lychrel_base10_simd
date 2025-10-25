@@ -246,7 +246,7 @@ impl Limb {
             LV_LEN as u8 - (bitmask.leading_zeros() as u8 - (64 - LV_LEN as u8))
         }
 
-        #[cfg(target_feature = "avx512bw")]
+        #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
         #[inline(always)]
         fn len_avx512bw(input: &Limb) -> u8 {
             unsafe {
@@ -255,13 +255,13 @@ impl Limb {
             }
         }
 
-        #[cfg(target_feature = "avx512bw")]
+        #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
         {
             debug_assert_eq!(len_portable(self), len_avx512bw(self));
             len_avx512bw(self)
         }
 
-        #[cfg(not(target_feature = "avx512bw"))]
+        #[cfg(not(all(target_feature = "avx512bw", not(feature = "no-avx"))))]
         len_portable(self)
     }
 
