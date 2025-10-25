@@ -17,11 +17,7 @@
 
 pub mod integer_limb;
 
-#[cfg(all(
-    target_pointer_width = "64",
-    not(target_family = "wasm"),
-    not(feature = "global-alloc")
-))]
+#[cfg(all(not(feature = "global-alloc"), any(target_family = "windows", target_family="unix")))]
 use integer_limb::HugePageAllocator;
 
 use integer_limb::{
@@ -53,18 +49,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
 
-    #[cfg(all(
-        target_pointer_width = "64",
-        not(target_family = "wasm"),
-        not(feature = "global-alloc")
-    ))]
+    #[cfg(all(not(feature = "global-alloc"), any(target_family = "windows", target_family="unix")))]
     let allocator = HugePageAllocator::init()?;
 
-    #[cfg(any(
-        not(target_pointer_width = "64"),
-        target_family = "wasm",
-        feature = "global-alloc"
-    ))]
+    #[cfg(not(all(not(feature = "global-alloc"), any(target_family = "windows", target_family="unix"))))]
     let allocator = Global;
 
     let mut starting_iteration: usize = 1;
@@ -106,18 +94,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut read_path: Option<&Path> = None;
     let mut read_verify: bool = false;
 
-    #[cfg(all(
-        target_pointer_width = "64",
-        not(target_family = "wasm"),
-        not(feature = "global-alloc")
-    ))]
+    #[cfg(all(not(feature = "global-alloc"), any(target_family = "windows", target_family="unix")))]
     let mut initial_value: Integer<HugePageAllocator> = Integer(Vec::new_in(allocator));
 
-    #[cfg(any(
-        not(target_pointer_width = "64"),
-        target_family = "wasm",
-        feature = "global-alloc"
-    ))]
+    #[cfg(not(all(not(feature = "global-alloc"), any(target_family = "windows", target_family="unix"))))]
     let mut initial_value: Integer<Global> = Integer(Vec::new());
 
     let exec_type = args.get(1).map_or_else(
