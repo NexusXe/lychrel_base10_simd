@@ -36,6 +36,7 @@ static mut PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4 * 1024).unwrap();
 
 impl HugePageAllocator {
     #[cfg(target_os = "windows")]
+    #[inline]
     fn enable_memory_lock_privilege(process_handle: HANDLE) -> WinResult<()> {
         use std::mem::zeroed;
 
