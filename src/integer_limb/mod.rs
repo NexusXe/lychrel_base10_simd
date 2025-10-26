@@ -603,41 +603,36 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         ever_carried = true;
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
-                        limb.0 = _mm512_mask_sub_epi8(
+                        let mut output = _mm512_mask_sub_epi8(
                             limb.0.into(),
                             carry_mask,
                             limb.0.into(),
                             CARRY_MASK_CMP.into(),
-                        )
-                        .into();
+                        );
 
-                        limb.0 = _mm512_mask_add_epi8(
-                            limb.0.into(),
+                        output = _mm512_mask_add_epi8(
+                            output,
                             (carry_mask << 1) | __mmask64::from(forward_carry), // do a round of carry propogation AND deal with a forward carry. absolute cinema
-                            limb.0.into(),
+                            output,
                             _mm512_set1_epi8(1),
-                        )
-                        .into();
+                        );
 
                         loop {
-                            let carry_mask =
-                                _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
+                            let carry_mask = _mm512_cmpge_epu8_mask(output, CARRY_MASK_CMP.into());
 
-                            limb.0 = _mm512_mask_sub_epi8(
-                                limb.0.into(),
+                            output = _mm512_mask_sub_epi8(
+                                output,
                                 carry_mask,
-                                limb.0.into(),
+                                output,
                                 CARRY_MASK_CMP.into(),
-                            )
-                            .into();
+                            );
 
-                            limb.0 = _mm512_mask_add_epi8(
-                                limb.0.into(),
+                            output = _mm512_mask_add_epi8(
+                                output,
                                 carry_mask << 1,
-                                limb.0.into(),
+                                output,
                                 _mm512_set1_epi8(1),
-                            )
-                            .into();
+                            );
 
                             if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
                                 overflowed = true;
