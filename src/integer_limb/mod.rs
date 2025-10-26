@@ -640,6 +640,16 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 break;
                             }
                         }
+
+                        #[cfg(target_feature = "avx512f")]
+                        {
+                            _mm512_stream_si512(limb_ptr as *mut __m512i, output);
+                        }
+
+                        #[cfg(not(target_feature = "avx512f"))]
+                        {
+                            limb.0 = output.into();
+                        }
                     } else {
                         cold_path();
                     }
