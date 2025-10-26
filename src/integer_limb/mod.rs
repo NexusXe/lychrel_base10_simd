@@ -703,10 +703,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
             2:
             prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8] # 4 bytes, 1 uop
+            neg {i:r}
+            prefetchw byte ptr [{rev_ptr:r} + 0 + {i:r} * 8] # 4 bytes, 1 uop
+            neg {i:r}
             add {i:l}, 8 # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
             jns 2b # 2 bytes; shares uop with add instruction
             "#,
             limbs_ptr = in(reg) limbs_ptr,
+            rev_ptr = in(reg) rev_ptr,
             i = inout(reg) 0 => _,
             options(nostack, nomem));
             // in addition to the first limbs, the last ones are also accessed first
