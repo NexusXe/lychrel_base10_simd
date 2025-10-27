@@ -609,14 +609,15 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     }
                 }
 
-                const CARRY_MASK_CMP: LimbVec = LimbVec::splat(10);
+                const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
+                const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
 
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
-                    let carry_mask = _mm512_cmpge_epu8_mask(limb.0.into(), CARRY_MASK_CMP.into());
+                    let carry_mask = _mm512_cmpgt_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
 
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
@@ -626,7 +627,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             limb.0.into(),
                             carry_mask,
                             limb.0.into(),
-                            CARRY_MASK_CMP.into(),
+                            TEN_VEC_BYTES.into(),
                         );
 
                         output = _mm512_mask_add_epi8(
@@ -637,13 +638,20 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         );
 
                         loop {
-                            let carry_mask = _mm512_cmpge_epu8_mask(output, CARRY_MASK_CMP.into());
+                            let carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
+                            let carry_mask_gen2 =
+                                _mm512_cmpeq_epu8_mask(output, CARRY_NINE_CMP.into())
+                                    & (carry_mask << 1); // find digits that will overflow because of carry propogation
+                            if (carry_mask & carry_mask_gen2) != 0 {
+                                impossible!("collision!"); // this never happens for reasons which elude me
+                            }
+                            let carry_mask = carry_mask | carry_mask_gen2;
 
                             output = _mm512_mask_sub_epi8(
                                 output,
                                 carry_mask,
                                 output,
-                                CARRY_MASK_CMP.into(),
+                                TEN_VEC_BYTES.into(),
                             );
 
                             output = _mm512_mask_add_epi8(
@@ -676,13 +684,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
+                    let carry_mask = limb.0.simd_gt(CARRY_NINE_CMP);
 
                     if likely(carry_mask.any()) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
-                        let subtracted_limb = limb.0 - CARRY_MASK_CMP;
+                        let subtracted_limb = limb.0 - TEN_VEC_BYTES;
                         limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
                         let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
@@ -690,9 +698,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             .select(added_limb, limb.0);
 
                         loop {
-                            let carry_mask = limb.0.simd_ge(CARRY_MASK_CMP);
+                            let carry_mask = limb.0.simd_gt(CARRY_NINE_CMP);
 
-                            let subtracted_limb = limb.0 - CARRY_MASK_CMP;
+                            let subtracted_limb = limb.0 - TEN_VEC_BYTES;
                             limb.0 = carry_mask.select(subtracted_limb, limb.0);
 
                             let added_limb = (*limb + Limb(LimbVec::splat(1))).0;
