@@ -544,7 +544,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // hack because i develop on Linux where the checkpoints fit in
                 // L3$ and constantly evicting them with streaming writes makes
                 // benchmark results less consistent :P
-                #[cfg(all(target_feature = "avx512f", target_os = "windows"))]
+                #[cfg(all(
+                    target_feature = "avx512f",
+                    target_os = "windows",
+                    not(feature = "no-stream")
+                ))]
                 // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
                 {
                     _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
@@ -555,7 +559,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 //     *right_limb_ptr = rhs_output;
                 // }
 
-                #[cfg(any(not(target_feature = "avx512f"), target_os = "linux"))]
+                #[cfg(any(
+                    not(target_feature = "avx512f"),
+                    target_os = "linux",
+                    feature = "no-stream"
+                ))]
                 {
                     *left_limb_ptr = lhs_output;
                     *right_limb_ptr = rhs_output;
@@ -690,12 +698,20 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             }
                         }
 
-                        #[cfg(all(target_feature = "avx512f", target_os = "windows"))]
+                        #[cfg(all(
+                            target_feature = "avx512f",
+                            target_os = "windows",
+                            not(feature = "no-stream")
+                        ))]
                         {
                             _mm512_stream_si512(limb_ptr as *mut __m512i, output);
                         }
 
-                        #[cfg(any(not(target_feature = "avx512f"), target_os = "linux"))]
+                        #[cfg(any(
+                            not(target_feature = "avx512f"),
+                            target_os = "linux",
+                            feature = "no-stream"
+                        ))]
                         {
                             limb.0 = output.into();
                         }
