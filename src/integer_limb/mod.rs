@@ -505,11 +505,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         use std::ptr::read_unaligned;
 
         // quick and dirty configuration for my specific devices
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
+        // #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        // const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
 
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
+        // #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        // const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
 
         if self.0.is_empty() {
             impossible!("Tried to reverse and add empty integer");
@@ -543,13 +543,15 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 // so this still compiles on non-x86 targets
                 // TODO: this is sort of a hack
                 #[cfg(target_feature = "avx512f")]
-                if likely(total_limbs > CACHE_SIZE / LV_BYTES) {
+                // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
+                {
                     _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
                     _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
-                } else {
-                    *left_limb_ptr = lhs_output;
-                    *right_limb_ptr = rhs_output;
                 }
+                //else {
+                //     *left_limb_ptr = lhs_output;
+                //     *right_limb_ptr = rhs_output;
+                // }
 
                 #[cfg(not(target_feature = "avx512f"))]
                 {
@@ -557,6 +559,23 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     *right_limb_ptr = rhs_output;
                 }
             }
+        }
+
+        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
+        unsafe {
+            std::arch::asm!(r#"
+            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
+            2:
+            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8]      # 4 bytes, 1 uop
+            add {i:l}, 8                                        # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
+            jns 2b                                              # 2 bytes; shares uop with add instruction
+            "#,
+            limbs_ptr = in(reg) limbs_ptr,
+            i = inout(reg) 0 => _,
+            options(nostack, nomem));
+            // in addition to the first limbs, the last ones are also accessed first
+            // however, they are likely still in cache
         }
 
         let mut overflowed = false;
@@ -692,31 +711,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
-        unsafe {
-            // prefetch the first 16 limbs since, for integers larger than L3$, they've probably been evicted by now
-            // prefetching in asm because I don't want this loop unrolled
-            // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
-            // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
-            std::arch::asm!(r#"
-            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
-            2:
-            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8] # 4 bytes, 1 uop
-            neg {i:r}
-            prefetchw byte ptr [{rev_ptr:r} + 0 + {i:r} * 8] # 4 bytes, 1 uop
-            neg {i:r}
-            add {i:l}, 8 # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
-            jns 2b # 2 bytes; shares uop with add instruction
-            "#,
-            limbs_ptr = in(reg) limbs_ptr,
-            rev_ptr = in(reg) rev_ptr,
-            i = inout(reg) 0 => _,
-            options(nostack, nomem));
-            // in addition to the first limbs, the last ones are also accessed first
-            // however, they are likely still in cache
-        }
-
         let pad_ptr = unsafe { rev_ptr.add(1) as *mut WideVec };
 
         if unsafe { *pad_ptr != std::mem::zeroed() } {
@@ -747,6 +741,32 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         } else {
             self.0.pop();
         }
+
+        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
+        unsafe {
+            // prefetch the first 16 limbs since, for integers larger than L3$, they've probably been evicted by now
+            // prefetching in asm because I don't want this loop unrolled
+            // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
+            // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
+            std::arch::asm!(r#"
+            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
+            2:
+            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8]      # 4 bytes, 1 uop
+            neg {i:r}                                           # 3 bytes, 1 uop
+            prefetchw byte ptr [{rev_ptr:r} + 0 + {i:r} * 8]    # 4 bytes, 1 uop
+            neg {i:r}                                           # 3 bytes, 1 uop
+            add {i:l}, 8                                        # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
+            jns 2b                                              # 2 bytes; shares uop with add instruction
+            "#,
+            limbs_ptr = in(reg) limbs_ptr,
+            rev_ptr = in(reg) rev_ptr,
+            i = inout(reg) 0 => _,
+            options(nostack, nomem));
+            // in addition to the first limbs, the last ones are also accessed first
+            // however, they are likely still in cache
+        }
+
         likely(ever_carried)
     }
 
