@@ -36,6 +36,7 @@ pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
     let start_time = Instant::now();
 
     while likely(i < range.end) {
+        #[cfg(not(feature = "no-verify"))]
         if unlikely(!carried) {
             cold_path();
             //eprintln!("Checking...");
