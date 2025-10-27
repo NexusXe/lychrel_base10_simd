@@ -592,14 +592,19 @@ SIMD Lychrel Number Search
 
                     let tetrahexacontabytes_per_second =
                         unsafe { fmul_fast(num_limbs as f64, rate) };
+                    let gibibytes_per_second = unsafe {
+                        fdiv_fast(
+                            tetrahexacontabytes_per_second,
+                            f64::from((1024u32 * 1024 * 1024) / LV_BYTES as u32),
+                        )
+                    };
+                    let gigabits_per_second =
+                        unsafe { fmul_fast(gibibytes_per_second, 8.589934592) };
+
                     println!(
-                        "Current stats:\n{:.2} GiBps\n{:.3} million limbs / sec\n{:.2} billion digits / sec\n",
-                        unsafe {
-                            fdiv_fast(
-                                tetrahexacontabytes_per_second,
-                                f64::from((1024u32 * 1024 * 1024) / LV_BYTES as u32),
-                            )
-                        },
+                        "Current stats:\n{:.2} GiBps ({:.2} Gbps)\n{:.3} million limbs / sec\n{:.2} billion digits / sec\n",
+                        gibibytes_per_second,
+                        gigabits_per_second,
                         unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
                         unsafe {
                             fdiv_fast(
