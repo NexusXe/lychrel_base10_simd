@@ -540,20 +540,22 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
                 let rhs_output =
                     *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
-                // so this still compiles on non-x86 targets
-                // TODO: this is sort of a hack
-                #[cfg(target_feature = "avx512f")]
+
+                // hack because i develop on Linux where the checkpoints fit in
+                // L3$ and constantly evicting them with streaming writes makes
+                // benchmark results less consistent :P
+                #[cfg(all(target_feature = "avx512f", target_os = "windows"))]
                 // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
                 {
                     _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
                     _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
                 }
-                //else {
+                // else {
                 //     *left_limb_ptr = lhs_output;
                 //     *right_limb_ptr = rhs_output;
                 // }
 
-                #[cfg(not(target_feature = "avx512f"))]
+                #[cfg(any(not(target_feature = "avx512f"), target_os = "linux"))]
                 {
                     *left_limb_ptr = lhs_output;
                     *right_limb_ptr = rhs_output;
@@ -661,6 +663,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 _mm512_set1_epi8(1),
                             );
 
+                            // at this point, three rounds of carry propogation have been done. chances are, no more will be needed
                             if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
                                 overflowed = true;
                             } else if std::hint::unlikely(carry_mask == 0) {
