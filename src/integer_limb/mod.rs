@@ -648,33 +648,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         );
 
                         loop {
-                            let carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-                            let carry_mask_gen2 = {
-                                let carry_mask_gen2_a = _mm512_mask_cmpeq_epu8_mask(
-                                    // method 1
-                                    carry_mask << 1,
-                                    output,
-                                    CARRY_NINE_CMP.into(),
-                                ); // find digits that will overflow because of carry propogation
-                                let carry_mask_gen2_b = _mm512_cmpeq_epu8_mask(
-                                    // method 2
-                                    output,
-                                    CARRY_NINE_CMP.into(),
-                                ) & (carry_mask << 1);
+                            let mut carry_mask =
+                                _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
+                            let ng_carry_mask =
+                                _mm512_cmpeq_epu8_mask(output, CARRY_NINE_CMP.into());
 
-                                if carry_mask_gen2_a != carry_mask_gen2_b {
-                                    // both of these are completely valid ways of determining this value, so let the compiler choose which it prefers
-                                    impossible!("unstable second-generation carry propogation!");
-                                }
-
-                                carry_mask_gen2_a & carry_mask_gen2_b
-                            };
-
-                            if (carry_mask & carry_mask_gen2) != 0 {
-                                impossible!("collision!"); // this never happens for reasons which elude me
+                            for _ in 0..2 {
+                                carry_mask |= ng_carry_mask & (carry_mask << 1);
                             }
-
-                            let carry_mask = carry_mask | carry_mask_gen2;
 
                             output = _mm512_mask_sub_epi8(
                                 output,
