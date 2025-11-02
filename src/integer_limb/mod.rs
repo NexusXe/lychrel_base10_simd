@@ -627,7 +627,17 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // incorporate previous limb carry into carry propogation
                     // do the loop once by hand, with some tweaks
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
-                    let carry_mask = _mm512_cmpgt_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
+                    let mut carry_mask =
+                        _mm512_cmpgt_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
+                    let ng_carry_mask =
+                        _mm512_cmpeq_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
+
+                    // 2: 26.2
+                    // 3: 24.5
+                    // 4: 25.3
+                    for _ in 0..3 {
+                        carry_mask |= ng_carry_mask & (carry_mask << 1);
+                    }
 
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
@@ -648,13 +658,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         );
 
                         loop {
-                            let mut carry_mask =
-                                _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-                            let ng_carry_mask =
-                                _mm512_cmpeq_epu8_mask(output, CARRY_NINE_CMP.into());
+                            let carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
 
-                            for _ in 0..2 {
-                                carry_mask |= ng_carry_mask & (carry_mask << 1);
+                            if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
+                                overflowed = true;
+                            } else if std::hint::unlikely(carry_mask == 0) {
+                                break;
                             }
 
                             output = _mm512_mask_sub_epi8(
@@ -672,11 +681,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             );
 
                             // at this point, three rounds of carry propogation have been done. chances are, no more will be needed
-                            if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
-                                overflowed = true;
-                            } else if std::hint::unlikely(carry_mask == 0) {
-                                break;
-                            }
                         }
 
                         #[cfg(all(
