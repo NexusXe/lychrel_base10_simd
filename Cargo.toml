@@ -7,6 +7,7 @@ edition = "2024"
 default-run = "lychrel_base10_simd"
 
 [features]
+default = ["no-stream"]
 no-verify = []
 no-avx = []
 64-byte-limbs = []
