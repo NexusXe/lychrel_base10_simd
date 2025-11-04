@@ -1,18 +1,15 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "panic=abort", "-C", "lto=fat", "-Z", "unstable-options", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-C", "panic=abort", "-C", "lto=fat", "-Z", "unstable-options", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
 
 [unstable]
 build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
 # build-std-features = ["panic_immediate_abort"]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
+rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
 linker = "rust-lld.exe"
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
-
-[target.powerpc64le-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=dynamic"]
+rustflags = ["-C", "target-cpu=native", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "passes=loop-data-prefetch early-cse<memssa> sroa gvn loop-unroll-and-jam loop-interchange aggressive-instcombine slp-vectorizer jump-threading dfa-jump-threading", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
 
 # llvm-config = "/home/briar/Documents/llvm-project/build/bin/llvm-config"
