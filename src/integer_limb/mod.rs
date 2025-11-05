@@ -657,13 +657,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             _mm512_set1_epi8(1),
                         );
 
-                        loop {
-                            let carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-
+                        carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
+                        while likely(carry_mask != 0) {
                             if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
                                 overflowed = true;
-                            } else if std::hint::unlikely(carry_mask == 0) {
-                                break;
                             }
 
                             output = _mm512_mask_sub_epi8(
@@ -680,6 +677,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 _mm512_set1_epi8(1),
                             );
 
+                            carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
                             // at this point, three rounds of carry propogation have been done. chances are, no more will be needed
                         }
 
