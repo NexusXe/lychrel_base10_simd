@@ -501,33 +501,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline(always)]
-    pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
-        use std::ptr::read_unaligned;
-
-        // quick and dirty configuration for my specific devices
-        // #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        // const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
-
-        // #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        // const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
-
-        if self.0.is_empty() {
-            impossible!("Tried to reverse and add empty integer");
-        }
-
-        let total_limbs = self.num_limbs();
-        if total_limbs > 2usize.pow(26) {
-            impossible!("Tried to iterate over an integer with more than 2^26 limbs");
-        }
-
-        self.0.push(Limb::new()); // padding
-
-        let skip_len = LV_LEN as u8 - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
-
-        let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
-        let rev_ptr = unsafe { &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0 }
-            as *mut LimbVec;
-
+    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
+        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         // instead of reversing into a seperate vector, reverse and pack into the original limb
         // branch like this so the smaller-than-cache variant still gets unrolled
         for i in 0..total_limbs.div_ceil(2) {
@@ -570,6 +545,43 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 }
             }
         }
+
+        
+    }
+
+    #[inline(always)]
+    pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
+        use std::ptr::read_unaligned;
+
+        // quick and dirty configuration for my specific devices
+        // #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        // const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
+
+        // #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        // const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
+
+        if self.0.is_empty() {
+            impossible!("Tried to reverse and add empty integer");
+        }
+
+        let total_limbs = self.num_limbs();
+        if total_limbs > 2usize.pow(26) {
+            impossible!("Tried to iterate over an integer with more than 2^26 limbs");
+        }
+
+        self.0.push(Limb::new()); // padding
+
+        let skip_len = LV_LEN as u8 - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
+
+        let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
+        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
+        if !std::ptr::eq(rev_ptr, unsafe {
+            &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0
+        }) {
+            impossible!("Incoherent rev_ptr");
+        }
+
+        Integer::<T>::zip_halves(limbs_ptr, total_limbs);
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
         #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
