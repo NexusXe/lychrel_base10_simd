@@ -502,14 +502,15 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         num_limbs
     }
 
-    #[inline(always)]
-    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
-        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
-        // instead of reversing into a seperate vector, reverse and pack into the original limb
-        // branch like this so the smaller-than-cache variant still gets unrolled
-        for i in 0..total_limbs.div_ceil(2) {
+    #[inline]
+    pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
+        if ub == 0 || lb >= ub {
+            impossible!("Incoherent zipper lb/ub");
+        }
+
+        for i in lb..ub {
             unsafe {
-                let left_limb_ptr = limbs_ptr.add(i);
+                let left_limb_ptr = limb_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
                 // shift these as qwords since byte-wise shifts use gfni
@@ -546,9 +547,15 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     *right_limb_ptr = rhs_output;
                 }
             }
+            }
         }
 
-        
+    #[inline(always)]
+    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
+        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
+        // instead of reversing into a seperate vector, reverse and pack into the original limb
+        // branch like this so the smaller-than-cache variant still gets unrolled
+        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
     }
 
     #[inline(always)]
