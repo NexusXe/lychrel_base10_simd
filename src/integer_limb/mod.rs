@@ -374,6 +374,62 @@ impl Limb {
         }
         Ok(())
     }
+
+    #[inline]
+    pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
+        if ub == 0 || lb >= ub {
+            impossible!("Incoherent zipper lb/ub");
+        }
+
+        for i in lb..ub {
+            unsafe {
+                let left_limb_ptr = limb_ptr.add(i);
+                let right_limb_ptr = rev_ptr.sub(i);
+
+                // shift these as qwords since byte-wise shifts use gfni
+                let lhs_output =
+                    *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
+                let rhs_output =
+                    *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
+
+                // hack because i develop on Linux where the checkpoints fit in
+                // L3$ and constantly evicting them with streaming writes makes
+                // benchmark results less consistent :P
+                #[cfg(all(
+                    target_feature = "avx512f",
+                    target_os = "windows",
+                    not(feature = "no-stream")
+                ))]
+                // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
+                {
+                    _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
+                    _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
+                }
+                // else {
+                //     *left_limb_ptr = lhs_output;
+                //     *right_limb_ptr = rhs_output;
+                // }
+
+                #[cfg(any(
+                    not(target_feature = "avx512f"),
+                    target_os = "linux",
+                    feature = "no-stream"
+                ))]
+                {
+                    *left_limb_ptr = lhs_output;
+                    *right_limb_ptr = rhs_output;
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
+        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
+        // instead of reversing into a seperate vector, reverse and pack into the original limb
+        // branch like this so the smaller-than-cache variant still gets unrolled
+        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
+    }
 }
 
 impl const std::default::Default for Limb {
@@ -502,62 +558,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         num_limbs
     }
 
-    #[inline]
-    pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
-        if ub == 0 || lb >= ub {
-            impossible!("Incoherent zipper lb/ub");
-        }
-
-        for i in lb..ub {
-            unsafe {
-                let left_limb_ptr = limb_ptr.add(i);
-                let right_limb_ptr = rev_ptr.sub(i);
-
-                // shift these as qwords since byte-wise shifts use gfni
-                let lhs_output =
-                    *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
-                let rhs_output =
-                    *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
-
-                // hack because i develop on Linux where the checkpoints fit in
-                // L3$ and constantly evicting them with streaming writes makes
-                // benchmark results less consistent :P
-                #[cfg(all(
-                    target_feature = "avx512f",
-                    target_os = "windows",
-                    not(feature = "no-stream")
-                ))]
-                // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
-                {
-                    _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
-                    _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
-                }
-                // else {
-                //     *left_limb_ptr = lhs_output;
-                //     *right_limb_ptr = rhs_output;
-                // }
-
-                #[cfg(any(
-                    not(target_feature = "avx512f"),
-                    target_os = "linux",
-                    feature = "no-stream"
-                ))]
-                {
-                    *left_limb_ptr = lhs_output;
-                    *right_limb_ptr = rhs_output;
-                }
-            }
-            }
-        }
-
-    #[inline(always)]
-    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
-        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
-        // instead of reversing into a seperate vector, reverse and pack into the original limb
-        // branch like this so the smaller-than-cache variant still gets unrolled
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
-    }
-
     #[inline(always)]
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
@@ -590,7 +590,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             impossible!("Incoherent rev_ptr");
         }
 
-        Integer::<T>::zip_halves(limbs_ptr, total_limbs);
+        Limb::zip_halves(limbs_ptr, total_limbs);
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
         #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
