@@ -377,7 +377,7 @@ impl Limb {
 
     #[inline]
     pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
-        if ub == 0 || lb >= ub {
+        if lb > ub || ub == 0 {
             impossible!("Incoherent zipper lb/ub");
         }
 
@@ -391,24 +391,15 @@ impl Limb {
                     *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
                 let rhs_output =
                     *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
-
-                // hack because i develop on Linux where the checkpoints fit in
-                // L3$ and constantly evicting them with streaming writes makes
-                // benchmark results less consistent :P
                 #[cfg(all(
                     target_feature = "avx512f",
                     target_os = "windows",
                     not(feature = "no-stream")
                 ))]
-                // if likely(total_limbs > CACHE_SIZE / LV_BYTES)
                 {
                     _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
                     _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
                 }
-                // else {
-                //     *left_limb_ptr = lhs_output;
-                //     *right_limb_ptr = rhs_output;
-                // }
 
                 #[cfg(any(
                     not(target_feature = "avx512f"),
@@ -428,7 +419,8 @@ impl Limb {
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         // instead of reversing into a seperate vector, reverse and pack into the original limb
         // branch like this so the smaller-than-cache variant still gets unrolled
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
+        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(4)) };
+        unsafe { Self::zipper(limbs_ptr, rev_ptr, total_limbs.div_ceil(4), total_limbs.div_ceil(2)) };
     }
 }
 
