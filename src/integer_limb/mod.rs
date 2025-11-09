@@ -120,14 +120,16 @@ mod huge_page_alloc;
 #[allow(unused_imports)]
 pub use huge_page_alloc::*;
 
+#[macro_export]
 macro_rules! impossible {
     ($message:expr) => {
         #[cfg(debug_assertions)]
         unreachable!($message);
 
         #[cfg(not(debug_assertions))]
+        #[allow(unused_unsafe)]
         unsafe {
-            unreachable_unchecked()
+            std::hint::unreachable_unchecked()
         }
     };
 }
@@ -612,8 +614,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .enumerate()
             .take_while(|(idx, _)| idx < &total_limbs)
         {
-            // the `impossible!()` macro contains its own `unsafe{}` block, which causes a warning
-            #[allow(unused_unsafe)]
             unsafe {
                 let limb_ptr = &raw const limb.0;
 
