@@ -1,7 +1,9 @@
-use super::integer_limb::Integer;
+use super::integer_limb::{Integer, side_channel::zip_worker};
 use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, unlikely};
+use std::sync::OnceLock;
 use std::sync::mpsc::Sender;
+use std::thread::{self, Thread};
 use std::time::Instant;
 
 pub struct IterationResult<T: Allocator + Clone + Copy> {
@@ -16,8 +18,9 @@ pub struct StatusReport {
 }
 
 pub const LOG_FREQUENCY_EXP: usize = 14;
-
 pub const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
+
+pub static ZIPPER_THREAD: OnceLock<Thread> = OnceLock::new();
 
 /// Iterates over a given input. If the returned `usize` is less than `range.end`, a palindrome was found.
 #[inline]
@@ -32,6 +35,8 @@ pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
 
     let mut carried: bool = true; // ignore palindrome check on the first loop
     let mut i: usize = range.start;
+
+    thread::spawn(zip_worker);
 
     let start_time = Instant::now();
 

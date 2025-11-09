@@ -12,8 +12,11 @@ use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::mem::transmute;
-
 use std::simd::prelude::*;
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::thread;
+
+pub mod side_channel;
 
 #[cfg(any(
     target_feature = "avx512f",
@@ -133,6 +136,11 @@ macro_rules! impossible {
         }
     };
 }
+
+pub static LHS_PTR: AtomicPtr<LimbVec> = AtomicPtr::new(std::ptr::null_mut());
+pub static OFFSET: AtomicUsize = AtomicUsize::new(0);
+pub static LB: AtomicU32 = AtomicU32::new(0);
+pub static UB: AtomicU32 = AtomicU32::new(0);
 
 /// A 64-byte vector of u8, representing a single "limb" of a large integer.
 ///
@@ -375,7 +383,7 @@ impl Limb {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
         if lb > ub || ub == 0 {
             impossible!("Incoherent zipper lb/ub");
@@ -419,8 +427,27 @@ impl Limb {
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         // instead of reversing into a seperate vector, reverse and pack into the original limb
         // branch like this so the smaller-than-cache variant still gets unrolled
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(4)) };
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, total_limbs.div_ceil(4), total_limbs.div_ceil(2)) };
+        if (total_limbs * LV_BYTES) > 1024 * 24 {
+            let worker_thread = loop {
+                if let Some(thread) = crate::iterate::ZIPPER_THREAD.get() {
+                    break thread;
+                }
+            };
+
+            LHS_PTR.store(limbs_ptr, Ordering::Relaxed);
+            OFFSET.store(total_limbs - 1, Ordering::Relaxed);
+            LB.store(total_limbs.div_ceil(4) as u32, Ordering::Relaxed);
+            UB.store(total_limbs.div_ceil(2) as u32, Ordering::Relaxed);
+            worker_thread.unpark();
+
+            unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(4)) };
+
+            while UB.load(Ordering::Acquire) != 0 {
+                thread::yield_now();
+            }
+        } else {
+            unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
+        }
     }
 }
 
