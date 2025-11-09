@@ -377,6 +377,8 @@ impl Limb {
 
     #[inline]
     pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
+        // instead of reversing into a seperate vector, reverse and pack into the original limb
+        // branch like this so the smaller-than-cache variant still gets unrolled
         if lb > ub || ub == 0 {
             impossible!("Incoherent zipper lb/ub");
         }
@@ -417,10 +419,7 @@ impl Limb {
     #[inline(always)]
     fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
-        // instead of reversing into a seperate vector, reverse and pack into the original limb
-        // branch like this so the smaller-than-cache variant still gets unrolled
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(4)) };
-        unsafe { Self::zipper(limbs_ptr, rev_ptr, total_limbs.div_ceil(4), total_limbs.div_ceil(2)) };
+        unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
     }
 }
 
