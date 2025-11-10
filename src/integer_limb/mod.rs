@@ -757,7 +757,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if likely(overflowed) {
-            #[cfg(target_feature = "avx512f")]
+            #[cfg(all(target_feature = "avx512f", not(feature = "no-stream")))]
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
                 debug_assert_eq!(
@@ -773,7 +773,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
 
-            #[cfg(not(target_feature = "avx512f"))]
+            #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
             unsafe {
                 *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
             }
