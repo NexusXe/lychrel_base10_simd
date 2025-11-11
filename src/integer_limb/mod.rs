@@ -15,6 +15,9 @@ use std::mem::transmute;
 
 use std::simd::prelude::*;
 
+mod mask_propagation;
+use mask_propagation::closure64;
+
 #[cfg(any(
     target_feature = "avx512f",
     target_feature = "sve",
@@ -635,9 +638,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // 2: 26.2
                     // 3: 24.5
                     // 4: 25.3
-                    for _ in 0..3 {
-                        carry_mask |= ng_carry_mask & (carry_mask << 1);
-                    }
+                    // for _ in 0..3 {
+                    //     carry_mask |= ng_carry_mask & (carry_mask << 1);
+                    // }
+
+                    carry_mask = mask_propagation::closure64(carry_mask, ng_carry_mask);
 
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
@@ -747,7 +752,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if likely(overflowed) {
-            #[cfg(target_feature = "avx512f")]
+            #[cfg(all(target_feature = "avx512f", not(feature = "no-stream")))]
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
                 debug_assert_eq!(
@@ -763,7 +768,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
 
-            #[cfg(not(target_feature = "avx512f"))]
+            #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
             unsafe {
                 *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
             }
