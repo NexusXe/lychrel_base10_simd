@@ -553,13 +553,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
         use std::ptr::read_unaligned;
 
-        // quick and dirty configuration for my specific devices
-        // #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        // const CACHE_SIZE: usize = 1024 * 1024 * 16; // 16 MiB
-
-        // #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        // const CACHE_SIZE: usize = 1024 * 1024 * 96; // 96 MiB
-
         if self.0.is_empty() {
             impossible!("Tried to reverse and add empty integer");
         }
