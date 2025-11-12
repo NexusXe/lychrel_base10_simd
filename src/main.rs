@@ -82,6 +82,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     enum RunType {
         Bench,
         LongBench,
+        LongerBench,
         Short,
         Long,
     }
@@ -225,6 +226,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--long-bench" => {
                 run_type = RunType::LongBench;
             }
+            "--longer-bench" => {
+                run_type = RunType::LongerBench;
+            }
             "--long" => {
                 run_type = RunType::Long;
             }
@@ -344,6 +348,12 @@ SIMD Lychrel Number Search
                     start_at = None;
                     no_checkpoint = true;
                     run_type_stop_at = LIMIT_LONG_BENCH;
+                }
+                RunType::LongerBench => {
+                    println!("Performing longer benchmark run.");
+                    start_at = None;
+                    no_checkpoint = true;
+                    run_type_stop_at = LIMIT_LONG_BENCH * 2;
                 }
                 RunType::Short => {
                     println!("Performing profiling run.");
