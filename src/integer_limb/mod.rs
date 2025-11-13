@@ -644,9 +644,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // 2: 26.2
                     // 3: 24.5
                     // 4: 25.3
-                        for _ in 0..3 {
-                            carry_mask |= ng_carry_mask & (carry_mask << 1);
-                        }
+                    for _ in 0..3 {
+                        carry_mask |= ng_carry_mask & (carry_mask << 1);
+                    }
 
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
