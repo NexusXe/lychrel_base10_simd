@@ -17,3 +17,4 @@ compare/
 *.ps1
 *.svg
 perf*
+*.json
