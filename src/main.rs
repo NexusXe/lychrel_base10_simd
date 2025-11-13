@@ -30,9 +30,10 @@ use integer_limb::{
 
 use std::alloc::Global;
 use std::any::type_name;
+use std::ffi::{c_int, c_void};
 use std::hint::{cold_path, unlikely};
 use std::intrinsics::{fdiv_fast, fmul_fast};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -41,6 +42,36 @@ use std::time::Instant;
 use std::io::Read;
 
 mod iterate;
+use std::cmp::Ordering;
+
+#[inline(never)]
+fn get_key_from_path(path: &Path) -> usize {
+    unsafe {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.split('.').next())
+            .map(|s| s.parse::<usize>().unwrap_unchecked())
+            .unwrap_unchecked()
+    }
+}
+
+extern "C" fn compare_paths(a: *const c_void, b: *const c_void) -> c_int {
+    let ordering = {
+        let path_a = unsafe { &*(a as *const PathBuf) };
+        let path_b = unsafe { &*(b as *const PathBuf) };
+
+        let key_a = get_key_from_path(path_a);
+        let key_b = get_key_from_path(path_b);
+
+        key_a.cmp(&key_b)
+    };
+
+    match ordering {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
+}
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     const INITIAL_SEED: u128 = 196;
@@ -393,13 +424,24 @@ SIMD Lychrel Number Search
                                 })
                                 .collect();
 
-                        checkpoint_files.sort_unstable_by_key(|path| {
-                            path.file_name()
-                                .and_then(|s| s.to_str())
-                                .and_then(|s| s.split('.').next())
-                                .and_then(|s| s.parse::<usize>().ok())
-                                .unwrap()
-                        });
+                        // Only sort if the vector is not empty
+                        if !checkpoint_files.is_empty() {
+                            // Safety: We are calling an external C function.
+                            // We must ensure all parameters are correct.
+                            // 1. `as_mut_ptr()` provides a valid pointer to the start of the Vec's data.
+                            // 2. `len()` is the correct number of elements.
+                            // 3. `size_of` is the correct width (in bytes) of each element.
+                            // 4. `compare_paths` is a valid function pointer with the C ABI
+                            //    that correctly interprets the `c_void` pointers.
+                            unsafe {
+                                libc::qsort(
+                                    checkpoint_files.as_mut_ptr() as *mut c_void,
+                                    checkpoint_files.len() as libc::size_t,
+                                    std::mem::size_of::<PathBuf>() as libc::size_t,
+                                    Some(compare_paths),
+                                );
+                            }
+                        }
 
                         match start_at {
                             Some(start_at_value) => {
