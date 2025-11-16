@@ -16,6 +16,9 @@ global-alloc = []
 no-prefetch = []
 no-stream = []
 
+[dependencies]
+libc = { git = "https://github.com/rust-lang/libc.git", branch = "main", default-features = false }
+
 [target.'cfg(target_family = "windows")'.dependencies]
 windows = { version = "0", features = [
     "Win32_System_Memory",
@@ -24,9 +27,6 @@ windows = { version = "0", features = [
     "Win32_System_Console",
 ] }
 memory-stats = "1.2"
-
-[target.'cfg(target_family = "unix")'.dependencies]
-libc = { git = "https://github.com/rust-lang/libc.git", branch = "main" }
 
 [dev-dependencies]
 rand = "0.9"
@@ -58,12 +58,14 @@ rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 inherits = "release"
 strip = false
 debug = true
+debug-assertions = false
 rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
 
 [profile.profiling.build-override]
 inherits = "release"
 strip = false
 debug = true
+debug-assertions = false
 rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
 
 [profile.dev]

@@ -435,6 +435,12 @@ impl std::ops::Add for Limb {
 
     #[inline(always)]
     fn add(self, other: Self) -> Self::Output {
+        if self.0 & LimbVec::splat(0xF0) != LimbVec::splat(0)
+            || other.0 & LimbVec::splat(0xF0) != LimbVec::splat(0)
+        {
+            impossible!("Tried to wide add Limbs with dirty uppers");
+        }
+
         unsafe {
             let input_64: WideVec = transmute(self.0);
             let other_64: WideVec = transmute(other.0);
