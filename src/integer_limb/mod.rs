@@ -744,7 +744,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             let subtracted_limb = output - TEN_VEC_BYTES;
                             output = carry_mask.select(subtracted_limb, output);
 
-                            let added_limb = (Limb(output) + Limb(LimbVec::splat(1))).0;
+                            let added_limb = output + LimbVec::splat(1);
                             output = carry_mask
                                 .shift_elements_right::<1>(false)
                                 .select(added_limb, output);
