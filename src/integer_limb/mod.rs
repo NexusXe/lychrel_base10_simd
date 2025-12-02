@@ -44,9 +44,9 @@ mod values {
             target_feature = "sve",
             feature = "64-byte-limbs"
         )),
-        target_feature = "sse"
+        target_feature = "sse",
+    	target_feature = "neon"
     ),
-    target_feature = "neon",
     target_feature = "simd128"
 ))] // 128-bit vectors
 mod values {

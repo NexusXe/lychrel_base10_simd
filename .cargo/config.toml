@@ -12,4 +12,8 @@ linker = "rust-lld.exe"
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=native", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
 
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "target-feature=+crt-static", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes"]
+
+
 # llvm-config = "/home/briar/Documents/llvm-project/build/bin/llvm-config"

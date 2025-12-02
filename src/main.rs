@@ -399,7 +399,7 @@ SIMD Lychrel Number Search
                                 })
                                 .collect();
 
-                        #[cfg(target_family = "unix")]
+                        #[cfg(any(target_family = "unix", target_os = "linux"))]
                         {
                             use std::cmp::Ordering;
                             use std::ffi::{c_int, c_void};
