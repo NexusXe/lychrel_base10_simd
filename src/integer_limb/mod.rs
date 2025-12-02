@@ -278,7 +278,7 @@ impl Limb {
         #[inline(always)]
         fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
-                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as u64)
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as WideVecScalar)
             }
         }
 
@@ -312,7 +312,7 @@ impl Limb {
         #[inline(always)]
         fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
-                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as u64)
+                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as WideVecScalar)
             }
         }
 
