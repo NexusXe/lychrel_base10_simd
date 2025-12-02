@@ -43,7 +43,7 @@ mod values {
             feature = "64-byte-limbs"
         )),
         target_feature = "sse",
-    	target_feature = "neon"
+        target_feature = "neon"
     ),
     target_feature = "sve",
     target_feature = "simd128"
@@ -277,7 +277,9 @@ impl Limb {
         #[inline(always)]
         fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
-                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) << N as WideVecScalar)
+                transmute::<WideVec, LimbVec>(
+                    transmute::<LimbVec, WideVec>(input) << N as WideVecScalar,
+                )
             }
         }
 
@@ -311,7 +313,9 @@ impl Limb {
         #[inline(always)]
         fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
-                transmute::<WideVec, LimbVec>(transmute::<LimbVec, WideVec>(input) >> N as WideVecScalar)
+                transmute::<WideVec, LimbVec>(
+                    transmute::<LimbVec, WideVec>(input) >> N as WideVecScalar,
+                )
             }
         }
 
@@ -731,8 +735,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         output = (carry_mask.shift_elements_right::<1>(forward_carry))
                             .select(added_limb, output);
 
+                        carry_mask = output.simd_gt(CARRY_NINE_CMP);
                         while likely(carry_mask.any()) {
-                            let carry_mask = output.simd_gt(CARRY_NINE_CMP);
+                            if likely(carry_mask.test_unchecked(LV_LEN - 1)) {
+                                overflowed = true;
+                            }
 
                             let subtracted_limb = output - TEN_VEC_BYTES;
                             output = carry_mask.select(subtracted_limb, output);
@@ -742,15 +749,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                                 .shift_elements_right::<1>(false)
                                 .select(added_limb, output);
 
-                            if likely(carry_mask.test_unchecked(LV_LEN - 1)) {
-                                overflowed = true;
-                            } else if std::hint::unlikely(!carry_mask.any()) {
-                                break;
-                            }
+                            carry_mask = output.simd_gt(CARRY_NINE_CMP);
                         }
                         limb.0 = output;
                     }
-                    
                 }
             }
         }
