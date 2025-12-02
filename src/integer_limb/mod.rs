@@ -15,6 +15,8 @@ use std::mem::transmute;
 
 use std::simd::prelude::*;
 
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, transmute};
+
 #[cfg(any(
     target_feature = "avx512f",
     target_arch = "powerpc64",
@@ -90,11 +92,28 @@ mod values {
     pub type WideVecScalar = u16;
 }
 
+// reasonable fallback for zerocopy. TODO: will this work on non-AVX512 builds?
+#[cfg(not(any(
+        target_feature = "avx512f",
+        target_feature = "avx2",
+        target_feature = "sve",
+        feature = "64-byte-limbs",
+        target_feature = "sse",
+        target_feature = "fxsr",
+        target_pointer_width = "64",
+        target_pointer_width = "32",
+        target_pointer_width = "16",
+    )))]
+mod values {
+    pub const LV_LEN: usize = 64;
+    pub type WideVecScalar = u64;
+}
+
 pub use values::*;
 pub const LV_BYTES: usize = LV_LEN * (LimbVecScalar::BITS / 8) as usize;
 
 pub type LimbVecScalar = u8;
-pub type LimbVec = Simd<LimbVecScalar, LV_LEN>;
+pub type LimbVec = Simd<LimbVecScalar, { LV_LEN }>;
 
 pub const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
 type WideVec = Simd<WideVecScalar, WV_LEN>;
@@ -137,7 +156,7 @@ macro_rules! impossible {
 ///
 /// Each byte represents a single digit in base 10, with the least significant digit at index 0.
 /// Thus, the digits are stored in reverse order.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromZeros, IntoBytes, KnownLayout)]
 pub struct Limb(pub LimbVec);
 
 impl const std::cmp::PartialEq for Limb {
@@ -147,8 +166,8 @@ impl const std::cmp::PartialEq for Limb {
         const fn eq_const(lhs: LimbVec, rhs: LimbVec) -> bool {
             let arr1 = lhs.to_array();
             let arr2 = rhs.to_array();
-            let arr1_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr1) };
-            let arr2_64b: [WideVecScalar; WV_LEN] = unsafe { transmute(arr2) };
+            let arr1_64b: [WideVecScalar; WV_LEN] = transmute!(arr1);
+            let arr2_64b: [WideVecScalar; WV_LEN] = transmute!(arr2);
             let mut i: usize = WV_LEN;
             while i > 0 {
                 if arr1_64b[i - 1] == arr2_64b[i - 1] {
@@ -478,7 +497,7 @@ impl std::fmt::Debug for Limb {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, KnownLayout)]
 pub struct Integer<T: Allocator + Clone + Copy>(pub Vec<Limb, T>);
 
 #[derive(Debug, PartialEq, Eq)]

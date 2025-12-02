@@ -15,6 +15,7 @@
 #![feature(stmt_expr_attributes)]
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
+#![feature(trivial_bounds)]
 
 pub mod integer_limb;
 
