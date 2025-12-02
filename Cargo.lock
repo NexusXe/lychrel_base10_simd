@@ -51,7 +51,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
- "libc 0.2.177",
+ "libc 0.2.178",
  "r-efi",
  "wasip2",
 ]
@@ -74,14 +74,14 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.177"
+version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
+checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
 name = "libc"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/rust-lang/libc.git?branch=main#b841a7822732dc10f05d1f9c022a7326dc7b1bc6"
+source = "git+https://github.com/rust-lang/libc.git?branch=main#46845987076649c0458810e323162d5c8b40b61e"
 
 [[package]]
 name = "lychrel_base10_simd"
@@ -106,7 +106,7 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c73f5c649995a115e1a0220b35e4df0a1294500477f97a91d0660fb5abeb574a"
 dependencies = [
- "libc 0.2.177",
+ "libc 0.2.178",
  "windows-sys 0.52.0",
 ]
 
@@ -284,7 +284,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be979b7f07507105799e854203b470ff7c78a1639e330a58f183b5fea574608b"
 dependencies = [
- "libc 0.2.177",
+ "libc 0.2.178",
  "vswhom-sys",
 ]
 
@@ -295,7 +295,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
- "libc 0.2.177",
+ "libc 0.2.178",
 ]
 
 [[package]]
