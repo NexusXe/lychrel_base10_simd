@@ -641,6 +641,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // doing it like this instead of adding one to the lowest digit separately is ~34% faster
                     let mut carry_mask =
                         _mm512_cmpgt_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
+
                     let ng_carry_mask =
                         _mm512_cmpeq_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
 
@@ -720,22 +721,21 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP);
                     let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP);
 
-                    // for _ in 0..3 {
-                    //     carry_mask |= ng_carry_mask & (carry_mask.shift_elements_left::<1>(false));
-                    // }
+                    for _ in 0..3 {
+                        carry_mask |= ng_carry_mask & (carry_mask.shift_elements_right::<1>(false));
+                    }
 
                     if likely(carry_mask.any()) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
-                        let subtracted_limb = limb.0 - TEN_VEC_BYTES;
-                        let mut output = carry_mask.select(subtracted_limb, limb.0);
+                        let mut output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
 
-                        let added_limb = (Limb(output) + Limb(LimbVec::splat(1))).0;
                         output = (carry_mask.shift_elements_right::<1>(forward_carry))
-                            .select(added_limb, output);
+                            .select(output + LimbVec::splat(1), output);
 
                         carry_mask = output.simd_gt(CARRY_NINE_CMP);
+
                         while likely(carry_mask.any()) {
                             if likely(carry_mask.test_unchecked(LV_LEN - 1)) {
                                 overflowed = true;
