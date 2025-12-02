@@ -17,7 +17,6 @@ use std::simd::prelude::*;
 
 #[cfg(any(
     target_feature = "avx512f",
-    target_feature = "sve",
     target_arch = "powerpc64",
     feature = "64-byte-limbs"
 ))] // 512-bit vectors
@@ -41,12 +40,12 @@ mod values {
         not(any(
             target_feature = "avx512f",
             target_feature = "avx2",
-            target_feature = "sve",
             feature = "64-byte-limbs"
         )),
         target_feature = "sse",
     	target_feature = "neon"
     ),
+    target_feature = "sve",
     target_feature = "simd128"
 ))] // 128-bit vectors
 mod values {
