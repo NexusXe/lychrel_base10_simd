@@ -16,12 +16,6 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
-#[cfg(target_family = "unix")]
-use std::{
-    cmp::Ordering,
-    ffi::{c_int, c_void},
-    path::PathBuf,
-};
 pub mod integer_limb;
 
 #[cfg(all(
@@ -399,7 +393,7 @@ SIMD Lychrel Number Search
                                 })
                                 .collect();
 
-                        #[cfg(any(target_family = "unix", target_os = "linux"))]
+                        #[cfg(target_family = "unix")]
                         {
                             use std::cmp::Ordering;
                             use std::ffi::{c_int, c_void};
