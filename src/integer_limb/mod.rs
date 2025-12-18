@@ -94,16 +94,16 @@ mod values {
 
 // reasonable fallback for zerocopy. TODO: will this work on non-AVX512 builds?
 #[cfg(not(any(
-        target_feature = "avx512f",
-        target_feature = "avx2",
-        target_feature = "sve",
-        feature = "64-byte-limbs",
-        target_feature = "sse",
-        target_feature = "fxsr",
-        target_pointer_width = "64",
-        target_pointer_width = "32",
-        target_pointer_width = "16",
-    )))]
+    target_feature = "avx512f",
+    target_feature = "avx2",
+    target_feature = "sve",
+    feature = "64-byte-limbs",
+    target_feature = "sse",
+    target_feature = "fxsr",
+    target_pointer_width = "64",
+    target_pointer_width = "32",
+    target_pointer_width = "16",
+)))]
 mod values {
     pub const LV_LEN: usize = 64;
     pub type WideVecScalar = u64;
