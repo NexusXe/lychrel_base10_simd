@@ -593,21 +593,7 @@ SIMD Lychrel Number Search
                                     eprintln!("Checkpoint validation failed at checkpoint {i:}");
                                     let read_checkpoint_len = read_checkpoint.data().1.len();
                                     let read_checkpoint_vector_size: u8 =
-                                        if read_checkpoint_len.is_multiple_of(64) {
-                                            64
-                                        } else if read_checkpoint_len.is_multiple_of(32) {
-                                            32
-                                        } else if read_checkpoint_len.is_multiple_of(16) {
-                                            16
-                                        } else if read_checkpoint_len.is_multiple_of(8) {
-                                            8
-                                        } else if read_checkpoint_len.is_multiple_of(4) {
-                                            4
-                                        } else if read_checkpoint_len.is_multiple_of(2) {
-                                            2
-                                        } else {
-                                            1
-                                        };
+                                        1u8 << read_checkpoint_len.trailing_zeros().min(6);
 
                                     if !checkpoint
                                         .data()
@@ -656,30 +642,18 @@ SIMD Lychrel Number Search
                     #[cfg(not(target_family = "windows"))]
                     println!("{:} KiB of memory", (num_limbs * LV_BYTES) / 1024);
 
-                    let tetrahexacontabytes_per_second =
-                        unsafe { fmul_fast(num_limbs as f64, rate) };
-                    let gibibytes_per_second = unsafe {
-                        fdiv_fast(
-                            tetrahexacontabytes_per_second,
-                            f64::from((1024u32 * 1024 * 1024) / LV_BYTES as u32),
-                        )
-                    };
-                    let gigabits_per_second =
-                        unsafe { fmul_fast(gibibytes_per_second, 8.589934592) };
-
+                    let limbs_per_second = unsafe { fmul_fast(num_limbs as f64, rate) };
+                    let bytes_per_second = unsafe { fmul_fast(limbs_per_second, LV_BYTES as f64) };
+                    let gibibytes_per_second =
+                        unsafe { fmul_fast(bytes_per_second, 9.313_225_746_154_785e-10) }; // 1 / 1024^3
+                    let gigabits_per_second = unsafe { fmul_fast(bytes_per_second, 8.0e-9) }; // 8 / 1_000_000_000
                     println!(
                         "Current stats:\n{:.2} GiBps ({:.2} Gbps)\n{:.3} million limbs / sec\n{:.2} billion digits / sec\n",
                         gibibytes_per_second,
                         gigabits_per_second,
-                        unsafe { fdiv_fast(tetrahexacontabytes_per_second, 1_000_000f64) },
-                        unsafe {
-                            fdiv_fast(
-                                tetrahexacontabytes_per_second,
-                                f64::from(1_000_000_000u32 / 64),
-                            )
-                        },
+                        unsafe { fmul_fast(limbs_per_second, 1.0e-6) },
+                        unsafe { fmul_fast(bytes_per_second, 1.0e-9) },
                     );
-                    // current rate = 64(num_limbs) / 1073741824
                 }
             }
 
