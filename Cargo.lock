@@ -81,7 +81,7 @@ checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 [[package]]
 name = "libc"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/rust-lang/libc.git?branch=main#8ecae6cae62df6bf8123b87f60b964a554af1863"
+source = "git+https://github.com/rust-lang/libc.git?branch=main#ba215ffa77c864bb06d36716c36bc7a62f306c60"
 
 [[package]]
 name = "lychrel_base10_simd"
