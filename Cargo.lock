@@ -81,7 +81,7 @@ checksum = "c5a2d376baa530d1238d133232d15e239abad80d05838b4b59354e5268af431f"
 [[package]]
 name = "libc"
 version = "1.0.0-alpha.2"
-source = "git+https://github.com/rust-lang/libc.git?branch=main#17adf2d8003fd5021358905abdfeed68d504070f"
+source = "git+https://github.com/rust-lang/libc.git?branch=main#ab195ebff42d2e7ed890795869882c0626fbdc4e"
 
 [[package]]
 name = "lychrel_base10_simd"
@@ -122,18 +122,18 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.104"
+version = "1.0.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9695f8df41bb4f3d222c95a67532365f569318332d03d5f3f67f37b20e6ebdf0"
+checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.42"
+version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a338cc41d27e6cc6dce6cefc13a0729dfbb81c262b1f519331575dd80ef3067f"
+checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
 ]
