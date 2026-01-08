@@ -695,8 +695,14 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                     // using likely/unlikely to tickle the code generation
                     // gotta keep those adders busy
+                    // check this separately since we don't really need the value ever
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
+                    }
+
+                    // always doing this might be faster than checking since it will do nothing if there are no carries
+                    // and if there are no carries, we're done anyway!
+                    if true {
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
 
                         let mut output = _mm512_mask_sub_epi8(
@@ -721,6 +727,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
                                 overflowed = true;
                             }
+
+                            // nothing added
+                            // 1 added (prev carried)
+                            // 10 subtracted (i carried)
+                            // 9 subtracted (prev carried and i carried)
 
                             output = _mm512_mask_sub_epi8(
                                 output,
@@ -810,7 +821,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if likely(overflowed) {
-            #[cfg(all(target_feature = "avx512f", not(feature = "no-stream")))]
+            //#[cfg(all(target_feature = "avx512f", not(feature = "no-stream")))]
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
                 debug_assert_eq!(
@@ -826,10 +837,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
             }
 
-            #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
-            unsafe {
-                *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
-            }
+            // #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
+            // unsafe {
+            //     *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
+            // }
         } else {
             self.0.pop();
         }

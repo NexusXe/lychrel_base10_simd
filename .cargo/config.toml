@@ -1,5 +1,5 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "build-std", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-C", "lto=fat", "-Z", "unstable-options", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
+rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "build-std", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-C", "lto=fat", "-Z", "unstable-options", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero", "-Z", "next-solver"]
 
 [unstable]
 build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
