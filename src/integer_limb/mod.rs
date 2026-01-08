@@ -677,7 +677,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let ng_carry_mask =
                         _mm512_cmpeq_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
 
-
                     // evil carry lookahead
                     // after the first add (which we already did), the only for more digits to overflow is if the previous digit overflowed
                     // we can know this ahead of time without doing any adding whatsoever, such that Literally All of the addition and subtraction
@@ -686,7 +685,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // super wide 512-bit operations in the (relatively) anemic integer vector units. graah why does everyone want more fp perf??
                     // integers are important too!!!
                     // ideally we would do this until there are no more carries possible, but eventually the insanely low latency of zen 5 avx-512
-                    // makes it no longer worth it to slide around the carry mask 
+                    // makes it no longer worth it to slide around the carry mask
                     // 2: 26.2
                     // 3: 24.5
                     // 4: 25.3
