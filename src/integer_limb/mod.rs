@@ -654,7 +654,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 let forward_carry = overflowed;
 
+                // actual add done here, within the Limb struct to force quadword addition
                 *limb = *limb + Limb(reversed_limb);
+
                 for result in limb.0.as_array() {
                     if *result > 18 {
                         impossible!("Got impossible addition result");
@@ -675,6 +677,16 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     let ng_carry_mask =
                         _mm512_cmpeq_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
 
+
+                    // evil carry lookahead
+                    // after the first add (which we already did), the only for more digits to overflow is if the previous digit overflowed
+                    // we can know this ahead of time without doing any adding whatsoever, such that Literally All of the addition and subtraction
+                    // that needs to be done for Literally Any of the digits can be done in a single add/subtract step
+                    // this really only works since using multiple instructions to fumble with the carry mask is so much faster than doing these
+                    // super wide 512-bit operations in the (relatively) anemic integer vector units. graah why does everyone want more fp perf??
+                    // integers are important too!!!
+                    // ideally we would do this until there are no more carries possible, but eventually the insanely low latency of zen 5 avx-512
+                    // makes it no longer worth it to slide around the carry mask 
                     // 2: 26.2
                     // 3: 24.5
                     // 4: 25.3
@@ -682,6 +694,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         carry_mask |= ng_carry_mask & (carry_mask << 1);
                     }
 
+                    // using likely/unlikely to tickle the code generation
+                    // gotta keep those adders busy
                     if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
                         overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
@@ -700,6 +714,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             _mm512_set1_epi8(1),
                         );
 
+                        // now loop through and take care of the rest of the carries.
+                        // not worth it to do carry lookahead again since there's probably only one or two more carries left to go,
+                        // and fiddling around with masks introduces latency that lets the adders get some time to breathe (unacceptable)
                         carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
                         while likely(carry_mask != 0) {
                             if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
@@ -721,7 +738,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             );
 
                             carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-                            // at this point, three rounds of carry propogation have been done. chances are, no more will be needed
+                            // at this point, four rounds of carry propogation have been done. chances are, no more will be needed
                         }
 
                         #[cfg(all(
