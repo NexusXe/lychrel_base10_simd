@@ -397,7 +397,7 @@ impl Limb {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     pub unsafe fn zipper(limb_ptr: *mut LimbVec, rev_ptr: *mut LimbVec, lb: usize, ub: usize) {
         // instead of reversing into a seperate vector, reverse and pack into the original limb
         // branch like this so the smaller-than-cache variant still gets unrolled
@@ -594,6 +594,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let skip_len = LV_LEN as u8 - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
 
+        if skip_len >= LV_LEN as u8 {
+            impossible!("skip_len out of bounds");
+        }
+
         let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         if !std::ptr::eq(rev_ptr, unsafe {
@@ -640,6 +644,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
 
                 limb.0 = (limb.0 << 4) >> 4;
+
+                if reversed_limb.simd_gt(LimbVec::splat(9)).any() {
+                    impossible!("Invalid digit in reversed_limb");
+                }
+                if limb.0.simd_gt(LimbVec::splat(9)).any() {
+                    impossible!("Invalid digit in limb");
+                }
 
                 let forward_carry = overflowed;
 
