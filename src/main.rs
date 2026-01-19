@@ -11,7 +11,6 @@
 #![feature(const_eval_select)]
 #![feature(cfg_overflow_checks)]
 #![feature(const_default)]
-#![feature(alloc_layout_extra)]
 #![feature(stmt_expr_attributes)]
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]

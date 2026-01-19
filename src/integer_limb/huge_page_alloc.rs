@@ -124,7 +124,7 @@ unsafe impl Allocator for HugePageAllocator {
         let size = layout.size();
 
         if size == 0 {
-            return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling(), 0));
+            return Ok(ptr::NonNull::slice_from_raw_parts(layout.dangling_ptr(), 0));
         }
 
         unsafe {
