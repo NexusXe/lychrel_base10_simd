@@ -47,7 +47,7 @@ debug-assertions = false
 overflow-checks = false
 codegen-units = 1
 lto = "fat"
-panic = "abort"
+panic = "immediate-abort"
 rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
 
 [profile.release.build-override]

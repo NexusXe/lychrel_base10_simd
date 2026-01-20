@@ -49,6 +49,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     const LIMIT_PROFILING: usize = LIMIT_SHORT * 5;
     const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
 
+    #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
+    eprintln!("\x1b[1;31mWarning:\x1b[22m Using portable_simd fallback code. This will be very, very slow.
+The portable_simd implementation of this program is mostly for reference, and is not intended for end-user use.
+\x1b[1mProceed with caution.\x1b[0m\n");
+
     //const LIMIT: usize = 500;
     //const LIMIT: usize = 100_358;
     const LIMIT: usize = usize::MAX;
@@ -292,7 +297,8 @@ Note: Run options used with read / read options used with run will be ignored
         println!(
             "Usage:
 lychrel_base10_simd run [options]
-lychrel_base10_simd read --path [path] [options]"
+lychrel_base10_simd read --path [path] [options]
+For more information, pass --help"
         );
         std::process::exit(0);
     }
