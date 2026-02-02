@@ -115,6 +115,10 @@ pub const LV_BYTES: usize = LV_LEN * (LimbVecScalar::BITS / 8) as usize;
 pub type LimbVecScalar = u8;
 pub type LimbVec = Simd<LimbVecScalar, { LV_LEN }>;
 
+#[allow(dead_code)]
+type LimbVecMask =
+    <std::simd::Simd<LimbVecScalar, { LV_LEN }> as std::simd::cmp::SimdPartialEq>::Mask;
+
 pub const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
 type WideVec = Simd<WideVecScalar, WV_LEN>;
 pub const WV_BYTES: usize = WV_LEN * (WideVecScalar::BITS / 8) as usize;
@@ -775,21 +779,32 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP);
-                    let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP);
+                    use std::simd::Select;
+
+                    let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
+                    let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
 
                     for _ in 0..3 {
-                        carry_mask |= ng_carry_mask & (carry_mask.shift_elements_right::<1>(false));
+                        carry_mask |= ng_carry_mask & carry_mask << 1;
                     }
 
-                    if likely(carry_mask.any()) || forward_carry {
+                    if likely(carry_mask != 0) || forward_carry {
                         ever_carried = true;
+                    }
+
+                    let mut carry_mask = LimbVecMask::from_bitmask(carry_mask);
+
+                    if true {
+                        //ever_carried = true;
                         overflowed = carry_mask.test_unchecked(LV_LEN - 1);
 
                         let mut output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
 
-                        output = (carry_mask.shift_elements_right::<1>(forward_carry))
-                            .select(output + LimbVec::splat(1), output);
+                        // using mask::shift_elements_n() loads the mask into a ZMM register and does a permute... what??
+                        output = LimbVecMask::from_bitmask(
+                            (carry_mask.to_bitmask() << 1) | forward_carry as u64,
+                        )
+                        .select(output + LimbVec::splat(1), output);
 
                         carry_mask = output.simd_gt(CARRY_NINE_CMP);
 
@@ -802,8 +817,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                             output = carry_mask.select(subtracted_limb, output);
 
                             let added_limb = output + LimbVec::splat(1);
-                            output = carry_mask
-                                .shift_elements_right::<1>(false)
+                            output = LimbVecMask::from_bitmask(carry_mask.to_bitmask() << 1)
                                 .select(added_limb, output);
 
                             carry_mask = output.simd_gt(CARRY_NINE_CMP);
