@@ -13,7 +13,8 @@ use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
 use std::mem::transmute;
 
-use std::simd::prelude::*;
+#[allow(unused_imports)]
+use std::simd::{Select, prelude::*};
 
 use zerocopy::{FromZeros, IntoBytes, KnownLayout, transmute};
 
@@ -557,50 +558,45 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
                 const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
 
+                // incorporate previous limb carry into carry propogation
+                // do the loop once by hand, with some tweaks
+                // doing it like this instead of adding one to the lowest digit separately is ~34% faster
+                let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
+                let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
+
+                // evil carry lookahead
+                // after the first add (which we already did), the only for more digits to overflow is if the previous digit overflowed
+                // we can know this ahead of time without doing any adding whatsoever, such that Literally All of the addition and subtraction
+                // that needs to be done for Literally Any of the digits can be done in a single add/subtract step
+                // this really only works since using multiple instructions to fumble with the carry mask is so much faster than doing these
+                // super wide 512-bit operations in the (relatively) anemic integer vector units. graah why does everyone want more fp perf??
+                // integers are important too!!!
+                // ideally we would do this until there are no more carries possible, but eventually the insanely low latency of zen 5 avx-512
+                // makes it no longer worth it to slide around the carry mask
+
+                // 2: 26.2
+                // 3: 24.5
+                // 4: 25.3
+                for _ in 0..3 {
+                    carry_mask |= ng_carry_mask & (carry_mask << 1);
+                }
+
+                // using likely/unlikely to tickle the code generation
+                // gotta keep those adders busy
+                // check this separately since we don't really need the value ever
+                if likely(carry_mask != 0) || forward_carry {
+                    ever_carried = true;
+                }
+
+                // always doing this might be faster than checking since it will do nothing if there are no carries
+                // and if there are no carries, we're done anyway!
+                overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
+
+                let output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
+
                 #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
                 {
-                    // incorporate previous limb carry into carry propogation
-                    // do the loop once by hand, with some tweaks
-                    // doing it like this instead of adding one to the lowest digit separately is ~34% faster
-                    let mut carry_mask =
-                        _mm512_cmpgt_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
-
-                    let ng_carry_mask =
-                        _mm512_cmpeq_epu8_mask(limb.0.into(), CARRY_NINE_CMP.into());
-
-                    // evil carry lookahead
-                    // after the first add (which we already did), the only for more digits to overflow is if the previous digit overflowed
-                    // we can know this ahead of time without doing any adding whatsoever, such that Literally All of the addition and subtraction
-                    // that needs to be done for Literally Any of the digits can be done in a single add/subtract step
-                    // this really only works since using multiple instructions to fumble with the carry mask is so much faster than doing these
-                    // super wide 512-bit operations in the (relatively) anemic integer vector units. graah why does everyone want more fp perf??
-                    // integers are important too!!!
-                    // ideally we would do this until there are no more carries possible, but eventually the insanely low latency of zen 5 avx-512
-                    // makes it no longer worth it to slide around the carry mask
-                    // 2: 26.2
-                    // 3: 24.5
-                    // 4: 25.3
-                    for _ in 0..3 {
-                        carry_mask |= ng_carry_mask & (carry_mask << 1);
-                    }
-
-                    // using likely/unlikely to tickle the code generation
-                    // gotta keep those adders busy
-                    // check this separately since we don't really need the value ever
-                    if likely(carry_mask != 0) || forward_carry {
-                        ever_carried = true;
-                    }
-
-                    // always doing this might be faster than checking since it will do nothing if there are no carries
-                    // and if there are no carries, we're done anyway!
-                    overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
-
-                    let mut output = _mm512_mask_sub_epi8(
-                        limb.0.into(),
-                        carry_mask,
-                        limb.0.into(),
-                        TEN_VEC_BYTES.into(),
-                    );
+                    let mut output = output.into();
 
                     output = _mm512_mask_add_epi8(
                         output,
@@ -658,24 +654,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    use std::simd::Select;
-
-                    let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
-                    let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
-
-                    for _ in 0..3 {
-                        carry_mask |= ng_carry_mask & carry_mask << 1;
-                    }
-
-                    if likely(carry_mask != 0) || forward_carry {
-                        ever_carried = true;
-                    }
-
                     let mut carry_mask = LimbVecMask::from_bitmask(carry_mask);
 
-                    overflowed = carry_mask.test_unchecked(LV_LEN - 1);
-
-                    let mut output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
+                    let mut output = output;
 
                     // using mask::shift_elements_n() loads the mask into a ZMM register and does a permute... what??
                     output = LimbVecMask::from_bitmask(
