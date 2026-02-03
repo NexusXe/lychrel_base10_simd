@@ -171,33 +171,10 @@ impl Limb {
     #[inline]
     fn len(&self) -> u8 {
         const ZEROS: LimbVec = LimbVec::splat(0);
-
-        #[allow(unused)]
-        #[inline(always)]
-        fn len_portable(input: &Limb) -> u8 {
-            let eq_mask = input.0.simd_ne(ZEROS);
+        let eq_mask = self.0.simd_ne(ZEROS);
             let bitmask = eq_mask.to_bitmask();
             64 - bitmask.leading_zeros() as u8
         }
-
-        #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
-        #[inline(always)]
-        fn len_avx512bw(input: &Limb) -> u8 {
-            unsafe {
-                let bitmask = _mm512_cmpneq_epu8_mask(input.0.into(), ZEROS.into());
-                64 - bitmask.leading_zeros() as u8
-            }
-        }
-
-        #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
-        {
-            debug_assert_eq!(len_portable(self), len_avx512bw(self));
-            len_avx512bw(self)
-        }
-
-        #[cfg(not(all(target_feature = "avx512bw", not(feature = "no-avx"))))]
-        len_portable(self)
-    }
 
     #[inline(always)]
     /// ## Safety
