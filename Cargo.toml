@@ -16,10 +16,8 @@ global-alloc = []
 no-prefetch = []
 no-stream = []
 
-
 [dependencies]
-zerocopy = { version = "0.8.31", features = ["derive", "simd-nightly"] }
-
+zerocopy = { version = "0.8", features = ["derive", "simd-nightly"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = { git = "https://github.com/rust-lang/libc.git", branch = "main" }
