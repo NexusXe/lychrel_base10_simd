@@ -654,9 +654,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
                 {
-                    let mut carry_mask = LimbVecMask::from_bitmask(carry_mask);
-
                     let mut output = output;
+
+                    let mut carry_mask = LimbVecMask::from_bitmask(carry_mask);
 
                     // using mask::shift_elements_n() loads the mask into a ZMM register and does a permute... what??
                     output = LimbVecMask::from_bitmask(
