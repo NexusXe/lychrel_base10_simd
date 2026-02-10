@@ -172,9 +172,13 @@ impl Limb {
     #[inline]
     fn len(&self) -> u8 {
         const ZEROS: LimbVec = LimbVec::splat(0);
+        if self.0 == ZEROS {
+            impossible!("Tried to get the length of an empty limb");
+        }
         let eq_mask = self.0.simd_ne(ZEROS);
         let bitmask = eq_mask.to_bitmask();
-        64 - bitmask.leading_zeros() as u8
+        let output = unsafe { bitmask.highest_one().unwrap_unchecked() } + 1;
+        output as u8
     }
 
     #[inline(always)]

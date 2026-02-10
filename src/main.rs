@@ -9,6 +9,7 @@
 #![feature(const_cmp)]
 #![feature(const_eval_select)]
 #![feature(const_default)]
+#![feature(int_lowest_highest_one)]
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 #![feature(trivial_bounds)]
