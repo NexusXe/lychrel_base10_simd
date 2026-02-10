@@ -55,9 +55,19 @@ pub use huge_page_alloc::*;
 
 #[macro_export]
 macro_rules! impossible {
-    ($message:expr) => {
+    () => {
         #[cfg(debug_assertions)]
-        unreachable!($message);
+        unreachable!();
+
+        #[cfg(not(debug_assertions))]
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::hint::unreachable_unchecked()
+        }
+    };
+    ($($arg:tt)+) => {
+        #[cfg(debug_assertions)]
+        unreachable!($($arg)+);
 
         #[cfg(not(debug_assertions))]
         #[allow(unused_unsafe)]
@@ -756,18 +766,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if self.0.len() != rhs.0.len() {
-            #[cfg(debug_assertions)]
-            unreachable!(
+            impossible!(
                 "Tried to show differences between integers of different lengths, {:} vs {:}:
                 {self:?}\n{rhs:?}",
                 self.0.len(),
                 rhs.0.len()
             );
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
         }
 
         let mut self_string: String = String::new();
@@ -838,13 +842,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     #[inline]
     pub const fn is_empty(&self) -> bool {
         if self.0.is_empty() {
-            #[cfg(debug_assertions)]
-            unreachable!(); // Any operations with Integers that contain no data are #UB
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked(); // give the compiler a chance to refuse to run with an unsafe precondition check
-            }
+            impossible!();
         }
 
         #[cfg(debug_assertions)]
@@ -1006,18 +1004,12 @@ impl<T: Allocator + Clone + Copy> std::cmp::PartialEq for Integer<T> {
         }
 
         if self.0.len() != other.0.len() {
-            #[cfg(debug_assertions)]
-            unreachable!(
+            impossible!(
                 "Tried to compare two integers of different lengths, {:} vs {:}:
                 {self:?}\n{other:?}",
                 self.0.len(),
                 other.0.len()
             );
-
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                unreachable_unchecked();
-            }
         }
 
         for (a, b) in self.0.iter().zip(other.0.iter()) {
