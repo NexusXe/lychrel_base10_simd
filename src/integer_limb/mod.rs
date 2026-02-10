@@ -710,16 +710,23 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
                 debug_assert_eq!(
-                    LimbVec::from_array([
-                        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-                    ]),
-                    std::mem::transmute::<WideVec, LimbVec>(WideVec::from_array([
-                        1, 0, 0, 0, 0, 0, 0, 0
-                    ]))
+                    {
+                        let mut vec = LimbVec::default();
+                        vec.as_mut_array()[0] = 1;
+                        vec
+                    },
+                    std::mem::transmute::<WideVec, LimbVec>({
+                        let mut wide = WideVec::default();
+                        wide.as_mut_array()[0] = 1;
+                        wide
+                    })
                 );
-                *pad_ptr = WideVec::from_array([1, 0, 0, 0, 0, 0, 0, 0]);
+                const ONE_WIDE: WideVec = {
+                    let mut wide: WideVec = unsafe { std::mem::zeroed() };
+                    wide.as_mut_array()[0] = 1;
+                    wide
+                };
+                *pad_ptr = ONE_WIDE;
             }
 
             // #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
