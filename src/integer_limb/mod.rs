@@ -8,6 +8,7 @@ use std::arch::x86_64::*;
 use std::alloc::{Allocator, Global as GlobalAllocator};
 use std::fmt::Write;
 #[cfg(not(debug_assertions))]
+#[allow(unused_imports)]
 use std::hint::unreachable_unchecked;
 use std::hint::{cold_path, likely};
 use std::intrinsics::const_eval_select;
@@ -461,7 +462,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
         let right_bound = output_slice.len() as u32 - u32::from(LV_LEN as u8 - skip_len);
         if !(right_bound - u32::from(skip_len)).is_multiple_of(LV_LEN as u32) {
-            impossible!("Reversal memory copy is not a multiple of 64 bytes");
+            impossible!("Reversal memory copy is not a multiple of {LV_LEN:} bytes");
         }
         output_slice.copy_within(skip_len as usize..right_bound as usize, 0);
 
@@ -604,7 +605,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 // always doing this might be faster than checking since it will do nothing if there are no carries
                 // and if there are no carries, we're done anyway!
-                overflowed = carry_mask & 0x8000_0000_0000_0000_u64 != 0; // not a branch, just shifts bits right
+                overflowed = carry_mask & 1 << (LV_LEN - 1) != 0; // not a branch, just shifts bits right
 
                 let output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
 
@@ -624,7 +625,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                     // and fiddling around with masks introduces latency that lets the adders get some time to breathe (unacceptable)
                     carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
                     while likely(carry_mask != 0) {
-                        if likely(carry_mask & 0x8000_0000_0000_0000_u64 != 0) {
+                        if likely(carry_mask & 1 << (LV_LEN - 1) != 0) {
                             overflowed = true;
                         }
 

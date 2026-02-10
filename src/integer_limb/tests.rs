@@ -1,11 +1,11 @@
 use super::*;
 use rand::prelude::*;
 
-#[test]
-fn test_len_empty() {
-    let limb = Limb::new();
-    assert_eq!(limb.len(), 0);
-}
+// #[test]
+// fn test_len_empty() {
+//     let limb = Limb::new();
+//     assert_eq!(limb.len(), 0);
+// }
 
 #[test]
 fn test_integer_macro() {

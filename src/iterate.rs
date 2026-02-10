@@ -30,11 +30,13 @@ pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
 
     current_iteration.0.reserve(2048.min(range.end / 100));
 
+    #[allow(unused_variables)]
     let mut carried: bool = true; // ignore palindrome check on the first loop
     let mut i: usize = range.start;
 
     let start_time = Instant::now();
 
+    #[allow(unused_assignments)]
     while likely(i < range.end) {
         #[cfg(not(feature = "no-verify"))]
         if unlikely(!carried) {
@@ -47,6 +49,7 @@ pub fn iterate<T: std::alloc::Allocator + Clone + Copy>(
                 break;
             }
         }
+
         carried = current_iteration.fused_reverse_add_asm_interleave();
         if unlikely(i.is_multiple_of(LOG_MASK)) {
             //eprintln!("{:} limbs, capacity: {:}", current_iteration.0.len(), current_iteration.0.capacity());
