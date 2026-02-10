@@ -1,5 +1,4 @@
 #![feature(likely_unlikely)]
-#![feature(cold_path)]
 #![feature(int_roundings)]
 #![feature(core_intrinsics)]
 #![allow(internal_features)]
