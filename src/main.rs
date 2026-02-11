@@ -94,6 +94,7 @@ The portable_simd implementation of this program is mostly for reference, and is
     let mut short_help: bool = false;
     let mut version: bool = false;
     let mut skip_next_arg: bool = false;
+    let mut quiet: bool = false;
 
     let mut start_at: Option<usize> = None;
 
@@ -147,6 +148,7 @@ The portable_simd implementation of this program is mostly for reference, and is
                 break;
             }
             "--version" => version = true,
+            "--quiet" => quiet = true,
             "--seed" => {
                 skip_next_arg = true;
                 seed_number = args.get(idx + 1).map_or_else(
@@ -540,20 +542,21 @@ SIMD Lychrel Number Search
                 let i = status_report.iteration;
                 let current_value = status_report.current_value;
 
-                let log_idx = i.div_floor(iterate::LOG_MASK) % 16;
-
                 let rate: f64 =
                     unsafe { fdiv_fast(iterate::LOG_MASK as f64, elapsed_time.as_secs_f64()) };
 
-                println!(
-                    "{}:{} {i}; {rate:.2} iter/sec",
-                    if log_idx == 0 { 16 } else { log_idx },
-                    if (log_idx < 10) && log_idx > 0 {
-                        " "
-                    } else {
-                        ""
-                    },
-                );
+                if !quiet {
+                    let log_idx = i.div_floor(iterate::LOG_MASK) % 16;
+                    println!(
+                        "{}:{} {i}; {rate:.2} iter/sec",
+                        if log_idx == 0 { 16 } else { log_idx },
+                        if (log_idx < 10) && log_idx > 0 {
+                            " "
+                        } else {
+                            ""
+                        },
+                    );
+                }
 
                 if current_value.is_some() {
                     cold_path();
