@@ -156,7 +156,7 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 [[package]]
 name = "libc"
 version = "1.0.0-alpha.3"
-source = "git+https://github.com/rust-lang/libc.git?branch=main#939f0090c2190755b0617172ba1b8ddbc5077d20"
+source = "git+https://github.com/rust-lang/libc.git?branch=main#d595a569929983c63911d54c9c4626525c510c62"
 
 [[package]]
 name = "log"
