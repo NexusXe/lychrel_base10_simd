@@ -10,6 +10,7 @@
 #![feature(const_eval_select)]
 #![feature(const_default)]
 #![feature(int_lowest_highest_one)]
+#![cfg_attr(all(any(target_arch = "x86_64", target_arch = "x86", not(feature = "no-avx"))), feature(stdarch_const_x86))]
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 #![feature(trivial_bounds)]
