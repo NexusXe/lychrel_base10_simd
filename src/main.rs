@@ -9,8 +9,10 @@
 #![feature(const_cmp)]
 #![feature(const_eval_select)]
 #![feature(const_default)]
-#![feature(int_lowest_highest_one)]
-#![cfg_attr(all(any(target_arch = "x86_64", target_arch = "x86", not(feature = "no-avx"))), feature(stdarch_const_x86))]
+#![cfg_attr(
+    all(any(target_arch = "x86_64", target_arch = "x86", not(feature = "no-avx"))),
+    feature(stdarch_const_x86)
+)]
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 #![feature(trivial_bounds)]
@@ -375,7 +377,7 @@ SIMD Lychrel Number Search
                 }
             }
 
-            let stop_at: usize = stop_at.map_or(run_type_stop_at, |stop_at| stop_at);
+            let stop_at: usize = stop_at.unwrap_or(run_type_stop_at);
 
             let checkpoint_path = Path::new(&checkpoint_path_str);
             match std::fs::read_dir(checkpoint_path) {
@@ -691,7 +693,7 @@ SIMD Lychrel Number Search
                 if found_palindrome { "Did" } else { "Did not" },
                 last_iteration,
                 if found_palindrome {
-                    format!(": {:}", &end_integer)
+                    format!(": {end_integer:}")
                 } else {
                     ".".to_string()
                 }

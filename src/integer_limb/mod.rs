@@ -85,7 +85,7 @@ macro_rules! impossible {
 #[derive(Clone, Copy, FromZeros, IntoBytes, KnownLayout)]
 pub struct Limb(pub LimbVec);
 
-impl const std::cmp::PartialEq for Limb {
+const impl std::cmp::PartialEq for Limb {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         #[inline]
@@ -132,7 +132,7 @@ impl From<Limb> for __m512i {
     }
 }
 
-impl const From<Limb> for LimbVec {
+const impl From<Limb> for LimbVec {
     #[inline]
     fn from(val: Limb) -> Self {
         val.0
@@ -147,7 +147,7 @@ impl From<__m512i> for Limb {
     }
 }
 
-impl const From<LimbVec> for Limb {
+const impl From<LimbVec> for Limb {
     #[inline]
     fn from(val: LimbVec) -> Self {
         Self(val)
@@ -352,7 +352,7 @@ impl Limb {
     }
 }
 
-impl const std::default::Default for Limb {
+const impl std::default::Default for Limb {
     #[inline(always)]
     fn default() -> Self {
         Self::new()
