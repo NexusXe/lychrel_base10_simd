@@ -49,21 +49,222 @@ use std::io::Read;
 
 mod iterate;
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const INITIAL_SEED: u128 = 196;
-    const LIMIT_SHORT: usize = 603_567;
-    const LIMIT_LONG_BENCH: usize = LIMIT_SHORT * 2;
-    const LIMIT_PROFILING: usize = LIMIT_SHORT * 5;
-    const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
+const INITIAL_SEED: u128 = 196;
+const LIMIT_SHORT: usize = 603_567;
+const LIMIT_LONG_BENCH: usize = LIMIT_SHORT * 2;
+const LIMIT_PROFILING: usize = LIMIT_SHORT * 5;
+const DEFAULT_CHECKPOINT_DIR: &str = "./checkpoints";
 
+/// Iteration target meaning "run until a palindrome turns up".
+const LIMIT: usize = usize::MAX;
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum ExecType {
+    Run,
+    Read,
+}
+
+#[derive(Clone, Copy)]
+enum RunType {
+    Bench,
+    LongBench,
+    LongerBench,
+    Short,
+    Long,
+}
+
+/// A parsed command line. `read_path` borrows from the argument vector.
+struct Args<'a> {
+    exec_type: ExecType,
+    run_type: RunType,
+    quiet: bool,
+    seed_number: u128,
+    checkpoint_path_str: String,
+    start_at: Option<usize>,
+    stop_at: Option<usize>,
+    no_checkpoint: bool,
+    write_yield: bool,
+    read_path: Option<&'a Path>,
+    read_verify: bool,
+}
+
+fn print_help() {
+    println!(
+        "lychrel_base10_simd usage:
+lychrel_base10_simd run [options]
+lychrel_base10_simd read --path [path] [options]
+
+General options:
+--help, -h          show this help
+--version           show version
+--quiet             suppress the periodic iteration rate lines
+
+Run options:
+--seed <seed>       specify the base number to iterate over (default: {INITIAL_SEED:})
+--checkpoint-dir    specify the directory of checkpoint files (default: {DEFAULT_CHECKPOINT_DIR:})
+--start-at          specify starting checkpoint iteration number (default: second to last if available)
+--stop-at           specify iteration target number (0 means no limit; default: set by run type)
+--no-checkpoint     don't start at a checkpoint, start at iteration 1 with seed instead
+--yield             write output to file regardless of whether a palindrome was found
+
+    Run type selection:
+    --bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_SHORT}`
+    --long-bench        Run long benchmark; alias for `--no-checkpoint --stop-at {LIMIT_LONG_BENCH}`
+    --longer-bench      Run longer benchmark; alias for `--no-checkpoint --stop-at {}`
+    --short             Run profiling run; alias for `--stop-at {LIMIT_PROFILING}`
+    --long              Run long run; alias for `--stop-at 0` (set by default)
+
+Read options:
+--path              path of checkpoint file to read
+--verify            verify that the read value is a valid Integer
+
+Note: Run options used with read / read options used with run will be ignored
+",
+        LIMIT_LONG_BENCH * 2
+    );
+}
+
+/// Prints the one-line usage and exits. Used for every argument error, which
+/// is why it never returns.
+fn usage_and_exit() -> ! {
+    println!(
+        "Usage:
+lychrel_base10_simd run [options]
+lychrel_base10_simd read --path [path] [options]
+For more information, pass --help"
+    );
+    std::process::exit(0);
+}
+
+/// The operand following the option at `idx`, or exit with `message`.
+fn operand<'a>(argv: &'a [String], idx: usize, message: &str) -> &'a str {
+    let Some(value) = argv.get(idx + 1) else {
+        eprintln!("{message}");
+        std::process::exit(1);
+    };
+    value
+}
+
+/// The operand following the option at `idx`, parsed. `noun` fills in both
+/// "Please specify a {noun}" and "Please specify a valid {noun}".
+fn parse_operand<T: std::str::FromStr>(argv: &[String], idx: usize, noun: &str) -> T {
+    operand(argv, idx, &format!("Please specify a {noun}"))
+        .parse()
+        .unwrap_or_else(|_| {
+            eprintln!("Please specify a valid {noun}");
+            std::process::exit(1);
+        })
+}
+
+fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
+    // `--help` and `--version` are answered wherever they appear, including in
+    // the exec type position, which is why they are matched before anything
+    // else in the line is interpreted.
+    for arg in argv.iter().skip(1) {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "--version" => {
+                println!("lychrel_base10_simd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
+    let exec_type = match argv.get(1).map(String::as_str) {
+        Some("run") => ExecType::Run,
+        Some("read") => ExecType::Read,
+        Some(other) => {
+            eprintln!("Unexpected run type argument: {other}\n");
+            usage_and_exit();
+        }
+        None => {
+            eprintln!("Please specify a run type\n");
+            usage_and_exit();
+        }
+    };
+
+    let mut args = Args {
+        exec_type,
+        run_type: RunType::Long,
+        quiet: false,
+        seed_number: INITIAL_SEED,
+        checkpoint_path_str: checkpoint_dir,
+        start_at: None,
+        stop_at: None,
+        no_checkpoint: false,
+        write_yield: false,
+        read_path: None,
+        read_verify: false,
+    };
+
+    let mut unrecognized = false;
+    let mut skip_operand = false;
+
+    for (idx, arg) in argv.iter().enumerate().skip(2) {
+        if skip_operand {
+            skip_operand = false;
+            continue;
+        }
+
+        match arg.as_str() {
+            // Answered above, before the exec type was even read.
+            "--help" | "-h" | "--version" => {}
+            "--quiet" => args.quiet = true,
+            "--seed" => {
+                skip_operand = true;
+                args.seed_number = parse_operand(argv, idx, "seed number");
+            }
+            "--checkpoint-dir" => {
+                skip_operand = true;
+                args.checkpoint_path_str =
+                    operand(argv, idx, "Please specify a checkpoint directory path").to_string();
+            }
+            "--start-at" => {
+                skip_operand = true;
+                args.start_at = Some(parse_operand(argv, idx, "start value"));
+            }
+            "--stop-at" => {
+                skip_operand = true;
+                // 0 is spelled "no limit"; anything else is inclusive, so the
+                // exclusive range end is one past it.
+                let stop_at: usize = parse_operand(argv, idx, "stop value");
+                args.stop_at = Some(if stop_at == 0 { LIMIT } else { stop_at + 1 });
+            }
+            "--no-checkpoint" => args.no_checkpoint = true,
+            "--yield" => args.write_yield = true,
+            "--bench" => args.run_type = RunType::Bench,
+            "--long-bench" => args.run_type = RunType::LongBench,
+            "--longer-bench" => args.run_type = RunType::LongerBench,
+            "--short" => args.run_type = RunType::Short,
+            "--long" => args.run_type = RunType::Long,
+            "--path" => {
+                skip_operand = true;
+                args.read_path = Some(Path::new(operand(argv, idx, "Please specify a path")));
+            }
+            "--verify" => args.read_verify = true,
+            _ => {
+                eprintln!("unrecognized argument: {arg}");
+                unrecognized = true;
+            }
+        }
+    }
+
+    if unrecognized || (exec_type == ExecType::Read && args.read_path.is_none()) {
+        usage_and_exit();
+    }
+
+    args
+}
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
     eprintln!("\x1b[1;31mWarning:\x1b[22m Using portable_simd fallback code. This will be very, very slow.
 The portable_simd implementation of this program is mostly for reference, and is not intended for end-user use.
 \x1b[1mProceed with caution.\x1b[0m\n");
-
-    //const LIMIT: usize = 500;
-    //const LIMIT: usize = 100_358;
-    const LIMIT: usize = usize::MAX;
 
     #[cfg(all(
         not(feature = "global-alloc"),
@@ -77,7 +278,6 @@ The portable_simd implementation of this program is mostly for reference, and is
     )))]
     let allocator = Global;
 
-    let mut starting_iteration: usize = 1;
     let args: Vec<String> = std::env::args().collect();
 
     let checkpoint_dir = std::env::var("LYCHREL_CHECKPOINTS_PATH").map_or_else(
@@ -85,38 +285,21 @@ The portable_simd implementation of this program is mostly for reference, and is
         |path| path.trim_end_matches(['/', '\\']).to_string(),
     );
 
-    #[derive(PartialEq, Eq, Clone, Copy)]
-    enum ExecType {
-        Run,
-        Read,
-    }
+    let Args {
+        exec_type,
+        run_type,
+        quiet,
+        seed_number,
+        checkpoint_path_str,
+        mut start_at,
+        stop_at,
+        mut no_checkpoint,
+        write_yield,
+        read_path,
+        read_verify,
+    } = parse_args(&args, checkpoint_dir);
 
-    enum RunType {
-        Bench,
-        LongBench,
-        LongerBench,
-        Short,
-        Long,
-    }
-
-    let mut help: bool = false;
-    let mut short_help: bool = false;
-    let mut version: bool = false;
-    let mut skip_next_arg: bool = false;
-    let mut quiet: bool = false;
-
-    let mut start_at: Option<usize> = None;
-
-    let mut stop_at: Option<usize> = None;
-    let mut checkpoint_path_str = checkpoint_dir.clone();
-    let mut seed_number: u128 = INITIAL_SEED;
-
-    let mut no_checkpoint: bool = false;
-    let mut write_yield = false;
-    let mut run_type = RunType::Long;
-
-    let mut read_path: Option<&Path> = None;
-    let mut read_verify: bool = false;
+    let mut starting_iteration: usize = 1;
 
     #[cfg(all(
         not(feature = "global-alloc"),
@@ -129,195 +312,6 @@ The portable_simd implementation of this program is mostly for reference, and is
         any(target_family = "windows", target_family = "unix")
     )))]
     let mut initial_value: Integer<Global> = Integer(Vec::new());
-
-    let exec_type = args.get(1).map_or_else(
-        || {
-            eprintln!("Please specify a run type\n");
-            None
-        },
-        |arg| match arg.as_str() {
-            "run" => Some(ExecType::Run),
-            "read" => Some(ExecType::Read),
-            _ => {
-                eprintln!("Unexpected run type argument: {arg}\n");
-                None
-            }
-        },
-    );
-
-    for (idx, arg) in args.iter().enumerate().skip(2) {
-        if skip_next_arg {
-            skip_next_arg = false;
-            continue;
-        }
-
-        match arg.as_str() {
-            "--help" | "-h" => {
-                help = true;
-                break;
-            }
-            "--version" => version = true,
-            "--quiet" => quiet = true,
-            "--seed" => {
-                skip_next_arg = true;
-                seed_number = args.get(idx + 1).map_or_else(
-                    || {
-                        eprintln!("Please specify a seed number");
-                        std::process::exit(1);
-                    },
-                    |seed| {
-                        seed.parse::<u128>().unwrap_or_else(|_| {
-                            eprintln!("Please specify a valid seed number");
-                            std::process::exit(1);
-                        })
-                    },
-                );
-            }
-            "--checkpoint-dir" => {
-                skip_next_arg = true;
-                checkpoint_path_str = args.get(idx + 1).map_or_else(
-                    || {
-                        eprintln!("Please specify a checkpoint directory path");
-                        std::process::exit(1);
-                    },
-                    std::clone::Clone::clone,
-                );
-            }
-            "--start-at" => {
-                skip_next_arg = true;
-                start_at = args.get(idx + 1).map_or_else(
-                    || {
-                        eprintln!("Please specify a start value");
-                        std::process::exit(1);
-                    },
-                    |start_at_str| {
-                        start_at_str.parse::<usize>().map_or_else(
-                            |_| {
-                                eprintln!("Please specify a valid start value");
-                                std::process::exit(1);
-                            },
-                            Some,
-                        )
-                    },
-                );
-            }
-            "--stop-at" => {
-                skip_next_arg = true;
-                stop_at = args.get(idx + 1).map_or_else(
-                    || {
-                        eprintln!("Please specify a stop value");
-                        std::process::exit(1);
-                    },
-                    |stop_at_str| {
-                        stop_at_str.parse::<usize>().map_or_else(
-                            |_| {
-                                eprintln!("Please specify a valid stop value");
-                                std::process::exit(1);
-                            },
-                            |stop_at_val| {
-                                Some(if stop_at_val == 0 {
-                                    LIMIT
-                                } else {
-                                    stop_at_val + 1
-                                })
-                            },
-                        )
-                    },
-                );
-            }
-            "--no-checkpoint" => {
-                no_checkpoint = true;
-            }
-            "--yield" => {
-                write_yield = true;
-            }
-            "--bench" => {
-                run_type = RunType::Bench;
-            }
-            "--short" => {
-                run_type = RunType::Short;
-            }
-            "--long-bench" => {
-                run_type = RunType::LongBench;
-            }
-            "--longer-bench" => {
-                run_type = RunType::LongerBench;
-            }
-            "--long" => {
-                run_type = RunType::Long;
-            }
-            "--path" => {
-                skip_next_arg = true;
-                read_path = args.get(idx + 1).map_or_else(
-                    || {
-                        eprintln!("Please specify a path");
-                        std::process::exit(1);
-                    },
-                    |path| Some(Path::new(path)),
-                );
-            }
-            "--verify" => {
-                read_verify = true;
-            }
-
-            _ => {
-                eprintln!("unrecognized argument: {arg}");
-                short_help = true;
-            }
-        }
-    }
-
-    if help {
-        println!("lychrel_base10_simd usage:
-lychrel_base10_simd run [options]
-lychrel_base10_simd read --path [path] [options]
-
-General options:
---help              show this help
---version           show version
-
-Run options:
---seed <seed>       specify the base number to iterate over (default: {INITIAL_SEED:})
---checkpoint-dir    specify the directory of checkpoint files (default: {DEFAULT_CHECKPOINT_DIR:})
---start-at          specify starting checkpoint iteration number (default: second to last if available)
---stop-at           specify iteration target number (default: 0)
---no-checkpoint     don't start at a checkpoint, start at iteration 1 with seed instead
---yield             write output to file regardless of whether a palindrome was found
-
-    Run type selection:
-    --bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_SHORT}`
-    --bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_LONG_BENCH}`
-    --short             Run profiling run; alias for `--stop-at {LIMIT_PROFILING}`
-    --long              Run long run; alias for `--stop-at 0` (set by default)
-
-Read options:
---path              path of checkpoint file to read
---verify            verify that the read value is a valid Integer
-
-Note: Run options used with read / read options used with run will be ignored
-");
-        std::process::exit(0);
-    }
-
-    if short_help
-        || exec_type.is_none()
-        || (exec_type.unwrap() == ExecType::Read && read_path.is_none())
-    {
-        println!(
-            "Usage:
-lychrel_base10_simd run [options]
-lychrel_base10_simd read --path [path] [options]
-For more information, pass --help"
-        );
-        std::process::exit(0);
-    }
-
-    let exec_type = exec_type.unwrap();
-
-    if version {
-        std::process::exit(0);
-    }
-
     match exec_type {
         ExecType::Run => {
             println!(
