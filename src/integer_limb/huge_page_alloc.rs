@@ -229,7 +229,8 @@ unsafe impl Allocator for HugePageAllocator {
             return Err(AllocError);
         }
 
-        if let Some(output) = ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr as *mut u8, size))
+        if let Some(output) =
+            ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr.cast::<u8>(), size))
         {
             Ok(output)
         } else {
@@ -240,6 +241,6 @@ unsafe impl Allocator for HugePageAllocator {
     #[cfg(target_family = "unix")]
     #[inline]
     unsafe fn deallocate(&self, ptr: ptr::NonNull<u8>, _layout: Layout) {
-        unsafe { libc::free(ptr.as_ptr() as *mut libc::c_void) };
+        unsafe { libc::free(ptr.as_ptr().cast::<libc::c_void>()) };
     }
 }

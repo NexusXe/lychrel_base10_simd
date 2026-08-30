@@ -9,12 +9,18 @@
 #![feature(const_cmp)]
 #![feature(const_eval_select)]
 #![feature(const_default)]
+#![allow(unused_features)]
 #![cfg_attr(
     all(any(target_arch = "x86_64", target_arch = "x86", not(feature = "no-avx"))),
     feature(stdarch_const_x86)
 )]
 #![deny(clippy::all)]
-#![allow(clippy::missing_safety_doc)]
+#![allow(
+    clippy::missing_safety_doc,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::inline_always
+)]
 #![feature(trivial_bounds)]
 
 pub mod integer_limb;

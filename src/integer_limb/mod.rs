@@ -196,15 +196,13 @@ impl Limb {
     /// ## Safety
     /// N must be <= 8
     const unsafe fn shl_wide<const N: u8>(&self) -> Self {
-        if N > 8 {
-            panic!("Limb::shr_wide() must not be used with N > 8");
-        }
+        assert!(N <= 8, "Limb::shr_wide() must not be used with N > 8");
 
         #[inline(always)]
         fn shl_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
                 transmute::<WideVec, LimbVec>(
-                    transmute::<LimbVec, WideVec>(input) << N as WideVecScalar,
+                    transmute::<LimbVec, WideVec>(input) << WideVecScalar::from(N),
                 )
             }
         }
@@ -232,15 +230,11 @@ impl Limb {
     /// ## Safety
     /// N must be <= 8
     const unsafe fn shr_wide<const N: u8>(&self) -> Self {
-        if N > 8 {
-            panic!("Limb::shr_wide() must not be used with N > 8");
-        }
-
         #[inline(always)]
         fn shr_wide_rt<const N: u8>(input: LimbVec) -> LimbVec {
             unsafe {
                 transmute::<WideVec, LimbVec>(
-                    transmute::<LimbVec, WideVec>(input) >> N as WideVecScalar,
+                    transmute::<LimbVec, WideVec>(input) >> WideVecScalar::from(N),
                 )
             }
         }
@@ -255,6 +249,8 @@ impl Limb {
             }
             unsafe { transmute(WideVec::from_array(output)) }
         }
+
+        assert!(N <= 8, "Limb::shr_wide() must not be used with N > 8");
 
         Self(const_eval_select(
             (self.0,),
@@ -508,7 +504,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         if !std::ptr::eq(rev_ptr, unsafe {
-            &mut self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0
+            &raw const self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0
         }) {
             impossible!("Incoherent rev_ptr");
         }
@@ -700,7 +696,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             }
         }
 
-        let pad_ptr = unsafe { rev_ptr.add(1) as *mut WideVec };
+        let pad_ptr = unsafe { rev_ptr.add(1).cast::<WideVec>() };
 
         if unsafe { *pad_ptr != std::mem::zeroed() } {
             impossible!("Dirty padding data!");
