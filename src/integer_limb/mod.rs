@@ -601,8 +601,8 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 let mut output = LimbVecMask::from_bitmask(carry_out_mask)
                     .select(limb.0 - TEN_VEC_BYTES, limb.0);
-                output = LimbVecMask::from_bitmask(carry_in)
-                    .select(output + LimbVec::splat(1), output);
+                output =
+                    LimbVecMask::from_bitmask(carry_in).select(output + LimbVec::splat(1), output);
 
                 for result in output.as_array() {
                     if *result > 9 {

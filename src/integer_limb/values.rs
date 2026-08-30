@@ -5,10 +5,7 @@
 //! width order, which is what determines the width a given target receives.
 
 /// Length of a limb vector in `u8` lanes, i.e. decimal digits per limb.
-pub const LV_LEN: usize = if cfg!(any(
-    feature = "64-byte-limbs",
-    target_feature = "avx512f"
-)) {
+pub const LV_LEN: usize = if cfg!(any(feature = "64-byte-limbs", target_feature = "avx512f")) {
     // 512-bit vectors
     64
 } else if cfg!(target_feature = "avx2") {
