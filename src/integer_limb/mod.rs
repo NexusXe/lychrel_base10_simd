@@ -562,122 +562,63 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
 
                 const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
                 const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
+                const TOP_LANE: u64 = 1 << (LV_LEN - 1);
 
-                // incorporate previous limb carry into carry propogation
-                // do the loop once by hand, with some tweaks
-                // doing it like this instead of adding one to the lowest digit separately is ~34% faster
-                let mut carry_mask = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
-                let ng_carry_mask = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
+                // Exact carry propagation through the hardware adder.
+                //
+                // With generate g = (digit > 9) and propagate p = (digit == 9),
+                // the carry recurrence c_i = g_i | (p_i & c_(i-1)) is the carry
+                // chain of the binary sum g + (g | p): g & (g | p) == g
+                // reproduces generate, and g ^ (g | p) == p reproduces
+                // propagate, since a digit cannot be both greater than and equal
+                // to 9. Adding those two words with the previous limb's carry as
+                // carry-in therefore resolves every carry in the limb at once,
+                // however long the run of nines, and the adder's carry-out is
+                // the carry out of the limb. The whole limb-to-limb dependency
+                // is then one `adc`.
+                let generate = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
+                let propagate = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
+                let gp = generate | propagate;
+                let (sum, adder_carry) = generate.carrying_add(gp, forward_carry);
 
-                // evil carry lookahead
-                // after the first add (which we already did), the only for more digits to overflow is if the previous digit overflowed
-                // we can know this ahead of time without doing any adding whatsoever, such that Literally All of the addition and subtraction
-                // that needs to be done for Literally Any of the digits can be done in a single add/subtract step
-                // this really only works since using multiple instructions to fumble with the carry mask is so much faster than doing these
-                // super wide 512-bit operations in the (relatively) anemic integer vector units. graah why does everyone want more fp perf??
-                // integers are important too!!!
-                // ideally we would do this until there are no more carries possible, but eventually the insanely low latency of zen 5 avx-512
-                // makes it no longer worth it to slide around the carry mask
+                // sum_i = g_i ^ gp_i ^ (carry into digit i), so undoing the two
+                // operands leaves the carry-in of every digit. A digit that
+                // receives a carry gains 1, and a digit that emits one loses 10;
+                // the emitting digits are the receiving ones shifted down a lane,
+                // with the carry out of the limb occupying the top lane.
+                let carry_in = sum ^ generate ^ gp;
+                let carry_out = if LV_LEN == u64::BITS as usize {
+                    adder_carry
+                } else {
+                    (generate | (propagate & carry_in)) & TOP_LANE != 0
+                };
+                let carry_out_mask = (carry_in >> 1) | (u64::from(carry_out) << (LV_LEN - 1));
 
-                // 2: 26.2
-                // 3: 24.5
-                // 4: 25.3
-                for _ in 0..3 {
-                    carry_mask |= ng_carry_mask & (carry_mask << 1);
-                }
-
-                // using likely/unlikely to tickle the code generation
-                // gotta keep those adders busy
-                // check this separately since we don't really need the value ever
-                if likely(carry_mask != 0) || forward_carry {
+                if likely(carry_in != 0) || carry_out {
                     ever_carried = true;
                 }
+                overflowed = carry_out;
 
-                // always doing this might be faster than checking since it will do nothing if there are no carries
-                // and if there are no carries, we're done anyway!
-                overflowed = carry_mask & 1 << (LV_LEN - 1) != 0; // not a branch, just shifts bits right
+                let mut output = LimbVecMask::from_bitmask(carry_out_mask)
+                    .select(limb.0 - TEN_VEC_BYTES, limb.0);
+                output = LimbVecMask::from_bitmask(carry_in)
+                    .select(output + LimbVec::splat(1), output);
 
-                let output = carry_mask.select(limb.0 - TEN_VEC_BYTES, limb.0);
-
-                #[cfg(all(target_feature = "avx512bw", not(feature = "no-avx")))]
-                {
-                    let mut output = output.into();
-
-                    output = _mm512_mask_add_epi8(
-                        output,
-                        (carry_mask << 1) | __mmask64::from(forward_carry), // do a round of carry propogation AND deal with a forward carry. absolute cinema
-                        output,
-                        _mm512_set1_epi8(1),
-                    );
-
-                    // now loop through and take care of the rest of the carries.
-                    // not worth it to do carry lookahead again since there's probably only one or two more carries left to go,
-                    // and fiddling around with masks introduces latency that lets the adders get some time to breathe (unacceptable)
-                    carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-                    while likely(carry_mask != 0) {
-                        if likely(carry_mask & 1 << (LV_LEN - 1) != 0) {
-                            overflowed = true;
-                        }
-
-                        // nothing added
-                        // 1 added (prev carried)
-                        // 10 subtracted (i carried)
-                        // 9 subtracted (prev carried and i carried)
-
-                        output =
-                            _mm512_mask_sub_epi8(output, carry_mask, output, TEN_VEC_BYTES.into());
-
-                        output = _mm512_mask_add_epi8(
-                            output,
-                            carry_mask << 1,
-                            output,
-                            _mm512_set1_epi8(1),
-                        );
-
-                        carry_mask = _mm512_cmpgt_epu8_mask(output, CARRY_NINE_CMP.into());
-                        // at this point, four rounds of carry propogation have been done. chances are, no more will be needed
-                    }
-
-                    // Fallback below is the exact negation of this condition.
-                    #[cfg(all(target_feature = "avx512f", feature = "stream"))]
-                    {
-                        _mm512_stream_si512(limb_ptr as *mut __m512i, output);
-                    }
-
-                    #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
-                    {
-                        limb.0 = output.into();
+                for result in output.as_array() {
+                    if *result > 9 {
+                        impossible!("Got impossible carry propagation result");
                     }
                 }
 
-                #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
+                // The fallback below is the exact negation of this condition,
+                // so exactly one of the two arms is always active.
+                #[cfg(all(target_feature = "avx512f", feature = "stream"))]
                 {
-                    let mut output = output;
+                    _mm512_stream_si512(limb_ptr as *mut __m512i, output.into());
+                }
 
-                    let mut carry_mask = LimbVecMask::from_bitmask(carry_mask);
-
-                    // using mask::shift_elements_n() loads the mask into a ZMM register and does a permute... what??
-                    output = LimbVecMask::from_bitmask(
-                        (carry_mask.to_bitmask() << 1) | forward_carry as u64,
-                    )
-                    .select(output + LimbVec::splat(1), output);
-
-                    carry_mask = output.simd_gt(CARRY_NINE_CMP);
-
-                    while likely(carry_mask.any()) {
-                        if likely(carry_mask.test_unchecked(LV_LEN - 1)) {
-                            overflowed = true;
-                        }
-
-                        let subtracted_limb = output - TEN_VEC_BYTES;
-                        output = carry_mask.select(subtracted_limb, output);
-
-                        let added_limb = output + LimbVec::splat(1);
-                        output = LimbVecMask::from_bitmask(carry_mask.to_bitmask() << 1)
-                            .select(added_limb, output);
-
-                        carry_mask = output.simd_gt(CARRY_NINE_CMP);
-                    }
+                #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
+                {
                     limb.0 = output;
                 }
             }
