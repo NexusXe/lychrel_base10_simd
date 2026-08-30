@@ -211,11 +211,14 @@ unsafe impl Allocator for HugePageAllocator {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<ptr::NonNull<[u8]>, AllocError> {
         use libc::{MADV_HUGEPAGE, aligned_alloc, free, posix_madvise};
-        static LARGE_PAGE: NonZeroUsize =
-            NonZeroUsize::new(unsafe { PAGE_SIZE.get() } * 1024).unwrap();
+        // A PMD-level huge page spans one base page worth of 8-byte page table
+        // entries, i.e. page_size * (page_size / 8): 2 MiB on a 4 KiB granule,
+        // 32 MiB on 16 KiB, 512 MiB on 64 KiB.
+        let page_size = unsafe { PAGE_SIZE.get() };
+        let large_page = page_size * (page_size / 8);
 
-        let alignment = layout.align().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
-        let size = layout.size().div_ceil(LARGE_PAGE.get()) * LARGE_PAGE.get();
+        let alignment = layout.align().div_ceil(large_page) * large_page;
+        let size = layout.size().div_ceil(large_page) * large_page;
         let ptr = unsafe { aligned_alloc(alignment, size) };
 
         #[cfg(debug_assertions)]
