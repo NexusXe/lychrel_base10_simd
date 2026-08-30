@@ -576,8 +576,8 @@ SIMD Lychrel Number Search
 
                     #[cfg(not(feature = "no-verify"))]
                     {
-                        let checkpoint_path = Path::new(&checkpoint_dir)
-                            .join(format!("{i}.{INITIAL_SEED:}_checkpoint"));
+                        let checkpoint_path = Path::new(&checkpoint_path_str)
+                            .join(format!("{i}.{seed_number:}_checkpoint"));
 
                         println!(
                             "Reached checkpoint: {}",
