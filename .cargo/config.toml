@@ -1,15 +1,40 @@
+# Flags here apply to *every* compilation unit: this crate, all dependencies,
+# build scripts/proc macros, and the build-std copies of core/std/alloc.
+#
+# Anything that differs per profile (LTO, panic strategy, opt-level, codegen
+# units, debug info, crt-static) lives in Cargo.toml instead -- cargo derives
+# those from the profile and passing them here would clobber the profile and
+# apply them to build scripts too.
+#
+# NOTE: a `[target.<triple>].rustflags` table *replaces* `[build].rustflags`
+# rather than appending to it, so the target tables below deliberately carry no
+# rustflags of their own.
 [build]
-rustflags = ["-C", "target-cpu=native", "-Z", "threads=16", "-Z", "build-std", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-C", "lto=fat", "-Z", "unstable-options", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero -enable-no-nans-fp-math -enable-no-signed-zeros-fp-math", "-Z", "next-solver"]
+rustflags = [
+    # Zen 5 (znver5) on this machine. Must be set globally so build-std's core
+    # and std are compiled with AVX-512 too.
+    "-C", "target-cpu=native",
+    # Parallel rustc frontend.
+    "-Z", "threads=16",
+    # Enables MIR optimizations that are known to be occasionally unsound.
+    # Deliberate: this is a compute kernel and the wins are worth the risk.
+    "-Z", "unsound-mir-opts",
+    # Extra LLVM vectorizer runs, plus flush-to-zero denormals for the (float)
+    # rate/statistics reporting math. The integer kernels are unaffected.
+    #
+    # The old config also carried -enable-no-nans-fp-math and
+    # -enable-no-signed-zeros-fp-math. LLVM 23 no longer accepts either as a
+    # command-line option (they are function attributes now) and rustc hard
+    # errors on them, so they are gone. They were never actually in effect:
+    # they only ever appeared in `[build]`, which the per-target tables
+    # overrode. src/main.rs already gets nnan/nsz where it matters via the
+    # fmul_fast/fdiv_fast intrinsics.
+    "-C", "llvm-args=--extra-vectorizer-passes",
+    "-C", "llvm-args=--denormal-fp-math=positive-zero",
+]
 
 [unstable]
 build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=native", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
 linker = "rust-lld.exe"
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-C", "linker-plugin-lto", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes --denormal-fp-math=positive-zero"]
-
-[target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-Z", "unsound-mir-opts", "-C", "panic=abort", "-Z", "threads=16", "-Z", "unstable-options", "-Z", "fmt-debug=none", "-Z", "panic_abort_tests", "-C", "lto=fat", "-C", "embed-bitcode=yes", "-Z", "dylib-lto=true", "-C", "prefer-dynamic=false", "-Zshare-generics=y", "-C", "llvm-args=--extra-vectorizer-passes"]

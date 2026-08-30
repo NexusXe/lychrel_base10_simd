@@ -37,53 +37,80 @@ rand = "0.10"
 [target.'cfg(target_family = "windows")'.build-dependencies]
 embed-resource = "3"
 
+# Profile `rustflags` *append* to `[build].rustflags` in .cargo/config.toml, so
+# `-C target-cpu=native` and friends are inherited here and are not repeated.
+
+# Fully optimized, statically linked, fat-LTO'd across the crate, every
+# dependency, and the build-std copies of core/std/alloc.
 [profile.release]
-strip = true
 opt-level = 3
-debug = false
-debug-assertions = false
-overflow-checks = false
 codegen-units = 1
 lto = "fat"
 panic = "immediate-abort"
-rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
-
-[profile.release.build-override]
 strip = true
-opt-level = 3
 debug = false
 debug-assertions = false
 overflow-checks = false
-codegen-units = 1
-rustflags = ["-Z", "fmt-debug=none", "-C", "target-cpu=native"]
+incremental = false
+rustflags = [
+    "-Z", "fmt-debug=none",
+    "-C", "target-feature=+crt-static",
+]
 
+# Build scripts and proc macros. Optimized, but deliberately *not* crt-static:
+# proc macros are dylibs loaded by rustc and cannot be statically linked, and
+# build-override silently inherits the parent profile's rustflags unless the
+# key is present, so it is reset to empty here. That only clears the *profile*
+# flags -- the .cargo/config.toml flags still apply.
+[profile.release.build-override]
+rustflags = []
+opt-level = 3
+codegen-units = 1
+strip = true
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+# Identical codegen to `release`, but keeps symbols and frame pointers so perf
+# can unwind. Profile rustflags replace (not extend) the inherited list, so the
+# release flags are repeated here.
 [profile.profiling]
 inherits = "release"
 strip = false
 debug = true
-debug-assertions = false
-rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
+rustflags = [
+    "-Z", "fmt-debug=none",
+    "-C", "target-feature=+crt-static",
+    "-C", "force-frame-pointers=yes",
+]
 
 [profile.profiling.build-override]
-inherits = "release"
+rustflags = []
 strip = false
 debug = true
-debug-assertions = false
-rustflags = ["-Z", "fmt-debug=none", "-C", "force-frame-pointers=yes", "-C", "target-cpu=native"]
 
+# The crate itself at -O1 with checks on, for fast edit/compile cycles.
+# No LTO for now; switch to "thin" here if the runtime cost gets annoying.
 [profile.dev]
 opt-level = 1
+lto = false
 debug = true
-overflow-checks = true
 debug-assertions = true
-lto = false
+overflow-checks = true
 rustflags = ["-C", "force-frame-pointers=yes"]
 
+# Dependencies and build-std are only compiled once, so keep them at full
+# optimization even in dev builds -- otherwise an unoptimized core/std makes
+# the kernels unmeasurable.
+[profile.dev.package."*"]
+opt-level = 3
+codegen-units = 1
+debug-assertions = false
+overflow-checks = false
 
-[profile.test]
-inherits = "dev"
-opt-level = 1
-overflow-checks = true
-debug-assertions = true
-lto = false
-rustflags = ["-C", "force-frame-pointers=yes"]
+[profile.dev.build-override]
+opt-level = 3
+codegen-units = 1
+
+# `test` and `bench` inherit `dev` and `release` respectively by default, and
+# dependencies of a test build use `dev`, so neither needs an explicit section.
