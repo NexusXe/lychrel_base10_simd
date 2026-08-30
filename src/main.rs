@@ -618,7 +618,7 @@ SIMD Lychrel Number Search
                                     {
                                         cold_path();
                                         eprintln!(
-                                            "It is possible that the current machine uses a different word size than the machine that generated this checkpoint.\nRead vector size: {read_checkpoint_vector_size:} bytes\nCurrent vector size: {LV_LEN:} bytes",
+                                            "It is possible that the current machine uses a different word size than the machine that generated this checkpoint.\nRead vector size: {read_checkpoint_vector_size:} bytes\nCurrent vector size: {LV_BYTES:} bytes",
                                         );
                                     }
                                     std::process::exit(1)
@@ -644,7 +644,11 @@ SIMD Lychrel Number Search
                             }
                         }
                     }
-                    print!("{:} limbs, approx. {:} digits, ", num_limbs, num_limbs * 64);
+                    print!(
+                        "{:} limbs, approx. {:} digits, ",
+                        num_limbs,
+                        num_limbs * LV_LEN
+                    );
 
                     #[cfg(target_family = "windows")]
                     if let Some(usage) = memory_stats::memory_stats() {
@@ -695,7 +699,7 @@ SIMD Lychrel Number Search
                 elapsed_time.as_secs_f64(),
                 end_integer.0.len(),
                 end_integer.len(),
-                end_integer.0.len() * 64 / 1024,
+                end_integer.0.len() * LV_BYTES / 1024,
                 if found_palindrome { "Did" } else { "Did not" },
                 last_iteration,
                 if found_palindrome {
@@ -728,7 +732,9 @@ SIMD Lychrel Number Search
 
             let data: Vec<[LimbVecScalar; LV_LEN]> =
                 Integer::<Global>::chop(&file).unwrap_or_else(|| {
-                    eprintln!("\x1b[1;31merror\x1b[0m: file length is not a multiple of 64 bytes");
+                    eprintln!(
+                        "\x1b[1;31merror\x1b[0m: file length is not a multiple of {LV_BYTES} bytes"
+                    );
                     std::process::exit(1);
                 });
 
