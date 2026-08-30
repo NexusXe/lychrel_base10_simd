@@ -318,21 +318,15 @@ impl Limb {
                     *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
                 let rhs_output =
                     *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
-                #[cfg(all(
-                    target_feature = "avx512f",
-                    target_os = "windows",
-                    not(feature = "no-stream")
-                ))]
+                // The fallback below is the exact negation of this condition,
+                // so exactly one of the two arms is always active.
+                #[cfg(all(target_feature = "avx512f", feature = "stream"))]
                 {
                     _mm512_stream_si512(left_limb_ptr.cast(), lhs_output.into());
                     _mm512_stream_si512(right_limb_ptr.cast(), rhs_output.into());
                 }
 
-                #[cfg(any(
-                    not(target_feature = "avx512f"),
-                    target_os = "linux",
-                    feature = "no-stream"
-                ))]
+                #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
                 {
                     *left_limb_ptr = lhs_output;
                     *right_limb_ptr = rhs_output;
@@ -644,20 +638,13 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                         // at this point, four rounds of carry propogation have been done. chances are, no more will be needed
                     }
 
-                    #[cfg(all(
-                        target_feature = "avx512f",
-                        target_os = "windows",
-                        not(feature = "no-stream")
-                    ))]
+                    // Fallback below is the exact negation of this condition.
+                    #[cfg(all(target_feature = "avx512f", feature = "stream"))]
                     {
                         _mm512_stream_si512(limb_ptr as *mut __m512i, output);
                     }
 
-                    #[cfg(any(
-                        not(target_feature = "avx512f"),
-                        target_os = "linux",
-                        feature = "no-stream"
-                    ))]
+                    #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
                     {
                         limb.0 = output.into();
                     }
@@ -703,7 +690,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         if likely(overflowed) {
-            //#[cfg(all(target_feature = "avx512f", not(feature = "no-stream")))]
+            //#[cfg(all(target_feature = "avx512f", feature = "stream"))]
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
                 debug_assert_eq!(
@@ -726,7 +713,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 *pad_ptr = ONE_WIDE;
             }
 
-            // #[cfg(not(all(target_feature = "avx512f", not(feature = "no-stream"))))]
+            // #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
             // unsafe {
             //     *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
             // }

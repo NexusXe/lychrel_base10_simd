@@ -7,14 +7,16 @@ edition = "2024"
 default-run = "lychrel_base10_simd"
 
 [features]
-default = ["no-stream", "64-byte-limbs"]
+default = ["64-byte-limbs"]
 no-verify = []
 no-avx = []
 64-byte-limbs = []
 1g-pages = []
 global-alloc = []
 no-prefetch = []
-no-stream = []
+# Use non-temporal (streaming) stores for limb writeback. Off by default:
+# bypassing cache makes short benchmark runs much less consistent
+stream = []
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive", "simd-nightly"] }
