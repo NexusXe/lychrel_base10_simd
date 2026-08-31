@@ -399,6 +399,7 @@ impl std::fmt::Debug for Limb {
 /// Resolves every decimal carry in a vector of digit sums (each 0..=18, with
 /// `forward_carry` into the lowest digit), returning the resolved digits, the
 /// carry out of the top digit, and whether any digit carried.
+#[cfg(any(test, feature = "reference-impl"))]
 #[inline(always)]
 pub(crate) fn resolve_digits(sums: LimbVec, forward_carry: bool) -> (LimbVec, bool, bool) {
     const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);

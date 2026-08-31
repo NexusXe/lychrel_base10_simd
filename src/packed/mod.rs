@@ -10,7 +10,8 @@
 //! and a packed line is exactly `Limb::pack` of two adjacent unpacked limbs.
 
 use crate::impossible;
-use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, resolve_digits};
+use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec};
+use std::simd::prelude::*;
 use std::alloc::Allocator;
 use std::hint::{cold_path, likely};
 
@@ -43,21 +44,66 @@ struct LineSum {
 }
 
 /// Adds two packed lines digit-wise and resolves every decimal carry inside
-/// the line, with `carry` into the line's lowest digit.
+/// the line, with `carry` into the line's lowest digit. The carry chain runs
+/// over the whole 128-digit line at once: the generate/propagate words of
+/// the two halves concatenate into a u128 (see `resolve_digits` for the
+/// derivation), so the line costs one wide add instead of two chained
+/// 64-digit resolutions.
 #[inline(always)]
 fn add_resolve_line(a: LimbVec, r: LimbVec, carry: bool) -> LineSum {
+    const NINES: LimbVec = LimbVec::splat(9);
+    const TOP_BIT: u32 = (2 * LV_LEN - 1) as u32;
+
     let (a_lo, a_hi) = unpack_line(a);
     let (r_lo, r_hi) = unpack_line(r);
+    let sum_lo = a_lo + r_lo;
+    let sum_hi = a_hi + r_hi;
 
-    let (lo, carry_mid, carried_lo) = resolve_digits(a_lo + r_lo, carry);
-    let (hi, carry_out, carried_hi) = resolve_digits(a_hi + r_hi, carry_mid);
+    for half in [sum_lo, sum_hi] {
+        for digit in half.as_array() {
+            if *digit > 18 {
+                impossible!("Got impossible addition result");
+            }
+        }
+    }
+
+    let generate = (u128::from(sum_hi.simd_gt(NINES).to_bitmask()) << LV_LEN)
+        | u128::from(sum_lo.simd_gt(NINES).to_bitmask());
+    let propagate = (u128::from(sum_hi.simd_eq(NINES).to_bitmask()) << LV_LEN)
+        | u128::from(sum_lo.simd_eq(NINES).to_bitmask());
+    let gp = generate | propagate;
+    let (sum, adder_carry) = generate.carrying_add(gp, carry);
+
+    let carry_in = sum ^ generate ^ gp;
+    let carry_out = if 2 * LV_LEN == 128 {
+        adder_carry
+    } else {
+        (generate | (propagate & carry_in)) & (1 << TOP_BIT) != 0
+    };
+    let emit = (carry_in >> 1) | (u128::from(carry_out) << TOP_BIT);
+
+    #[inline(always)]
+    fn fix(sums: LimbVec, receive: u64, emit: u64) -> LimbVec {
+        type M = std::simd::Mask<i8, LV_LEN>;
+        let out = M::from_bitmask(emit).select(sums - LimbVec::splat(10), sums);
+        let out = M::from_bitmask(receive).select(out + LimbVec::splat(1), out);
+        for digit in out.as_array() {
+            if *digit > 9 {
+                impossible!("Got impossible carry propagation result");
+            }
+        }
+        out
+    }
+
+    let lo = fix(sum_lo, carry_in as u64, emit as u64);
+    let hi = fix(sum_hi, (carry_in >> LV_LEN) as u64, (emit >> LV_LEN) as u64);
 
     LineSum {
         packed: pack_line(lo, hi),
         lo,
         hi,
         carry_out,
-        carried: carried_lo || carried_hi,
+        carried: carry_in != 0 || carry_out,
     }
 }
 
@@ -304,8 +350,9 @@ struct SharedPacked {
 unsafe impl Send for SharedPacked {}
 unsafe impl Sync for SharedPacked {}
 
-/// A chunk's reversed digits as two vectors: the window bytes 0..64 (the
-/// chunk's top 64 digits, descending) and 64..128 (its bottom 64).
+/// A chunk's resolved digits as two vectors, top half first: the reversal
+/// into rev_dst is folded into the emission's funnel indices, so the halves
+/// stay in digit-ascending order.
 type RevWindow = (LimbVec, LimbVec);
 
 const ZERO_WINDOW: RevWindow = (LimbVec::splat(0), LimbVec::splat(0));
@@ -324,41 +371,42 @@ fn load_window(stash: &[u8; DPL]) -> RevWindow {
     )
 }
 
-/// The bytes `[shift, shift + 64)` of the 128-byte concatenation of `a` and
-/// `b`. `shift` must be at most 64.
-#[inline(always)]
-fn align_bytes(a: LimbVec, b: LimbVec, shift: usize) -> LimbVec {
-    debug_assert!(shift <= LV_LEN);
+/// The funnel index for `emit_rev_line`: byte `j` of an emitted plane is
+/// `concat(reverse(a), reverse(b))[s + j]`, which is byte `(63 - s - j) mod
+/// 128` of `concat(a, b)` -- a descending two-source permutation. `s` is a
+/// per-iteration constant, so the index vector is built once per block.
+/// Because the indices descend, no lowering of the permutation can become a
+/// contiguous load; the reversal is what keeps the funnel in registers.
+#[inline]
+fn funnel_index(s: usize) -> LimbVec {
+    const IOTA: LimbVec = {
+        let mut lanes = [0u8; LV_LEN];
+        let mut i = 0;
+        while i < LV_LEN {
+            lanes[i] = i as u8;
+            i += 1;
+        }
+        LimbVec::from_array(lanes)
+    };
+    LimbVec::splat((LV_LEN - 1).wrapping_sub(s) as u8) - IOTA
+}
 
+/// Byte `j` of the result is `concat(a, b)[idx[j] mod 128]`, with `idx` from
+/// `funnel_index`.
+#[inline(always)]
+fn funnel(a: LimbVec, idx: LimbVec, b: LimbVec) -> LimbVec {
     #[cfg(all(
         target_arch = "x86_64",
         target_feature = "avx512vbmi",
         not(feature = "no-avx")
     ))]
-    {
+    unsafe {
         use std::arch::x86_64::{__m512i, _mm512_permutex2var_epi8};
-        const IOTA: LimbVec = {
-            let mut lanes = [0u8; LV_LEN];
-            let mut i = 0;
-            while i < LV_LEN {
-                lanes[i] = i as u8;
-                i += 1;
-            }
-            LimbVec::from_array(lanes)
-        };
-        // black_box keeps the three emit branches distinguishable: LLVM
-        // otherwise proves them equivalent to one variable 128-byte extract
-        // from a four-vector concatenation, which it lowers through a stack
-        // buffer whose overlapping stores and reloads defeat store-to-load
-        // forwarding on every line.
-        let idx = IOTA + LimbVec::splat(std::hint::black_box(shift) as u8);
-        unsafe {
-            LimbVec::from(_mm512_permutex2var_epi8(
-                __m512i::from(a),
-                __m512i::from(idx),
-                __m512i::from(b),
-            ))
-        }
+        LimbVec::from(_mm512_permutex2var_epi8(
+            __m512i::from(a),
+            __m512i::from(idx),
+            __m512i::from(b),
+        ))
     }
 
     #[cfg(not(all(
@@ -367,49 +415,60 @@ fn align_bytes(a: LimbVec, b: LimbVec, shift: usize) -> LimbVec {
         not(feature = "no-avx")
     )))]
     {
-        let mut buf = [0u8; 2 * LV_LEN];
-        buf[..LV_LEN].copy_from_slice(a.as_array());
-        buf[LV_LEN..].copy_from_slice(b.as_array());
-        LimbVec::from_slice(&buf[shift..shift + LV_LEN])
+        let mut out = [0u8; LV_LEN];
+        for (j, lane) in out.iter_mut().enumerate() {
+            let i = (idx[j] as usize) % (2 * LV_LEN);
+            *lane = if i < LV_LEN { a[i] } else { b[i - LV_LEN] };
+        }
+        LimbVec::from_array(out)
     }
 }
 
-/// Writes one rev_dst line assembled from the reversed windows of chunk `k`
-/// (`cur`) and chunk `k - 1` (`prev`). Chunk `k` covers rev slots
-/// [out_digits - DPL*(k+1), out_digits - DPL*k); the line completed by its
-/// arrival is the one holding the top of that window. Targets outside
-/// [0, lines_out) are the virtual lines above the top or below slot zero.
 /// Buffer size in lines above which the pass's rev_dst stores go around the
 /// cache: the three buffers no longer fit in an L3, and a fresh-write stream
 /// pays a read-for-ownership per line unless stored non-temporally.
 const STREAM_MIN_LINES: usize = 1 << 19;
 
+/// The per-iteration emission constants: the intra-line offset `phi`, the
+/// funnel index for the shift `emit_rev_line`'s `phi` branch uses, and `q`
+/// such that chunk `k` completes rev_dst line `q - k`.
+#[inline]
+fn emit_params(out_digits: usize) -> (usize, LimbVec, isize) {
+    let phi = out_digits % DPL;
+    let shift = if phi > LV_LEN { DPL - phi } else { LV_LEN - phi };
+    (phi, funnel_index(shift), (out_digits / DPL) as isize)
+}
+
+/// Writes rev_dst line `target`, assembled from the digits of chunk `k`
+/// (`cur`) and chunk `k - 1` (`prev`), both in ascending order: the funnel
+/// indices perform the digit reversal. Chunk `k` covers rev slots
+/// [out_digits - DPL*(k+1), out_digits - DPL*k); the line completed by its
+/// arrival is the one holding the top of that window, `out_digits / DPL - k`.
+/// Targets outside [0, lines_out) are the virtual lines above the top or
+/// below slot zero. `phi` is `out_digits % DPL` and `idx` comes from
+/// `funnel_index` of the shift the `phi` branch uses.
 #[inline(always)]
 unsafe fn emit_rev_line<const STREAM: bool>(
     rev_dst: *mut Limb,
-    out_digits: usize,
+    target: isize,
     lines_out: usize,
-    k: usize,
+    phi: usize,
+    idx: LimbVec,
     cur: RevWindow,
     prev: RevWindow,
 ) {
-    let w = out_digits as isize - (DPL * (k + 1)) as isize;
-    let target = w.div_euclid(DPL as isize) + 1;
     if target < 0 || target >= lines_out as isize {
         return;
     }
-    let phi = out_digits % DPL;
 
-    // The line is the 128 bytes at offset DPL - phi of [cur, prev]; its
-    // first 64 bytes are the packed line's low-digit plane.
+    // The line is the 128 reversed digit bytes at offset DPL - phi of the
+    // reversed [cur, prev]; its first 64 bytes are the low-digit plane.
     let (lo, hi) = if phi == 0 {
-        prev
+        (prev.0.reverse(), prev.1.reverse())
     } else if phi > LV_LEN {
-        let shift = DPL - phi;
-        (align_bytes(cur.0, cur.1, shift), align_bytes(cur.1, prev.0, shift))
+        (funnel(cur.0, idx, cur.1), funnel(cur.1, idx, prev.0))
     } else {
-        let shift = LV_LEN - phi;
-        (align_bytes(cur.1, prev.0, shift), align_bytes(prev.0, prev.1, shift))
+        (funnel(cur.1, idx, prev.0), funnel(prev.0, idx, prev.1))
     };
     let line = pack_line(lo, hi);
 
@@ -481,6 +540,8 @@ impl SharedPacked {
             return;
         }
 
+        let (phi, idx, q) = emit_params(out_digits);
+
         let mut carry = false;
         let mut any_carried = false;
         let mut prev = ZERO_WINDOW;
@@ -501,14 +562,16 @@ impl SharedPacked {
             carry = sum.carry_out;
             any_carried |= sum.carried;
 
-            // the window is the chunk's digits in descending order
-            let cur = (sum.hi.reverse(), sum.lo.reverse());
+            let cur = (sum.hi, sum.lo);
+            let target = q - k as isize;
 
             if likely(k > start) {
-                unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, k, cur, prev) };
+                unsafe { emit_rev_line::<STREAM>(rdst, target, lines_out, phi, idx, cur, prev) };
             } else if k == 0 {
                 // the top rev_dst line: nothing above the window but padding
-                unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, k, cur, ZERO_WINDOW) };
+                unsafe {
+                    emit_rev_line::<STREAM>(rdst, target, lines_out, phi, idx, cur, ZERO_WINDOW)
+                };
             } else {
                 unsafe { store_window(&mut *self.stash_first[j].0.get(), cur) };
             }
@@ -517,7 +580,17 @@ impl SharedPacked {
 
         if end == lines {
             // the bottom rev_dst line: nothing below the last window
-            unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, end, ZERO_WINDOW, prev) };
+            unsafe {
+                emit_rev_line::<STREAM>(
+                    rdst,
+                    q - end as isize,
+                    lines_out,
+                    phi,
+                    idx,
+                    ZERO_WINDOW,
+                    prev,
+                )
+            };
         } else {
             unsafe { store_window(&mut *self.stash_last[j].0.get(), prev) };
         }
@@ -638,6 +711,7 @@ impl PackedEngine {
 
         // Seam lines: rev_dst lines straddling a block boundary are built
         // from the last window below the seam and the first window above it.
+        let (phi, idx, q) = emit_params(out_digits);
         let mut below: Option<RevWindow> = None;
         for j in 0..num_blocks {
             let start = shared.bounds[j].load(Relaxed);
@@ -652,9 +726,10 @@ impl PackedEngine {
                 unsafe {
                     emit_rev_line::<false>(
                         x.rev[next].as_mut_ptr(),
-                        out_digits,
+                        q - start as isize,
                         lines_out,
-                        start,
+                        phi,
+                        idx,
                         cur,
                         prev,
                     );
