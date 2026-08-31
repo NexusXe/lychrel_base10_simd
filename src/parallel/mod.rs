@@ -433,7 +433,8 @@ pub fn iterate_parallel<T: Allocator + Clone + Copy>(
             engine = Some(ParallelEngine::new(target_threads));
             engine_threads = target_threads;
             eprintln!(
-                "Parallel engine: {target_threads} thread(s) at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
+                "Parallel engine: {target_threads} thread{} at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
+                if target_threads == 1 {""} else {"s"},
                 start_time.elapsed().as_secs_f64()
             );
         }
