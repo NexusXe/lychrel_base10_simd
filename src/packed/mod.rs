@@ -282,8 +282,15 @@ struct SharedPacked {
     ever_carried: AtomicBool,
     /// 2 * num_threads + 1 entries: block boundaries in lines.
     bounds: Box<[AtomicUsize]>,
-    /// 2 * num_threads entries: each block's speculative carry-out.
+    /// 2 * num_threads entries: each block's speculative carry-out. Only
+    /// the low blocks (below `num_threads`) use theirs; high blocks carry
+    /// per chunk instead.
     block_carry: Box<[Padded<AtomicBool>]>,
+    /// Carry-outs of the high blocks' chunks, published by the coordinator
+    /// each step. The chunk starting at line `c` of block `j` owns slot
+    /// `j + c / CHUNK_LINES`: block indices break ties between the two
+    /// chunks a non-aligned block boundary splits a grid cell into.
+    chunk_carry: AtomicPtr<AtomicBool>,
 }
 
 // The destination pointer partitions by block, the source is read-only
@@ -389,6 +396,13 @@ fn rev_operand(
 /// stream pays a read-for-ownership per line unless stored non-temporally.
 const STREAM_MIN_LINES: usize = 1 << 19;
 
+/// Chunk granularity of the mirror-interleaved pair walk, in lines. A round
+/// touches two chunk-sized source ranges (128KB at 1024 lines), which must
+/// stay resident in one core's L2 between the low chunk's pass and the high
+/// chunk's, where the same two ranges are read with the streams swapped.
+/// Tests shrink it so their small fixtures cross chunk boundaries.
+const CHUNK_LINES: usize = if cfg!(test) { 4 } else { 1 << 10 };
+
 /// Stores one resolved output line, non-temporally when the pass streams.
 #[inline(always)]
 unsafe fn store_line<const STREAM: bool>(dst: *mut Limb, k: usize, line: LimbVec) {
@@ -421,37 +435,47 @@ impl SharedPacked {
             block_carry: (0..num_threads * 2)
                 .map(|_| Padded(AtomicBool::new(false)))
                 .collect(),
+            chunk_carry: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
-    /// The fused pass over block `j`: for each output line, gather the
-    /// reversed operand from the backward stream's rolling line pair, add it
-    /// to the forward stream's line with a speculative carry-in of zero, and
-    /// store the sum slot-aligned into the destination buffer. Lines outside
-    /// the source read as zeros (the virtual padding below digit 0 and above
-    /// the top line), which also zeros the output's top-line padding: sums
-    /// there are 0 + 0, and a carry out of the top digit lands in the first
-    /// padding slot as the grown number's leading 1.
-    fn run_block(&self, j: usize) {
+    /// The fused pass over participant `t`'s mirror block pair, walked as
+    /// interleaved chunks: the low block ascends while the high block
+    /// descends, one chunk each per round. A chunk's backward stream reads
+    /// the mirror of its own line range, which is (to within boundary
+    /// rounding) the other chunk of the same round, so each round pulls two
+    /// chunk-sized source ranges from memory and the second chunk's reads
+    /// hit them in cache. For each output line, the reversed operand is
+    /// gathered from the backward stream's rolling line pair and added to
+    /// the forward stream's line with a speculative carry-in of zero at
+    /// every chain break -- the low block's chain runs unbroken through its
+    /// ascending chunks, while each descending high chunk starts its own.
+    /// Lines outside the source read as zeros (the virtual padding below
+    /// digit 0 and above the top line), which also zeros the output's
+    /// top-line padding: sums there are 0 + 0, and a carry out of the top
+    /// digit lands in the first padding slot as the grown number's leading
+    /// 1.
+    fn run_pair(&self, t: usize) {
         if self.lines.load(Relaxed) >= STREAM_MIN_LINES {
-            self.run_block_inner::<true>(j);
+            self.run_pair_inner::<true>(t);
         } else {
-            self.run_block_inner::<false>(j);
+            self.run_pair_inner::<false>(t);
         }
     }
 
-    fn run_block_inner<const STREAM: bool>(&self, j: usize) {
+    fn run_pair_inner<const STREAM: bool>(&self, t: usize) {
         let src = self.a_src.load(Relaxed);
         let dst = self.a_dst.load(Relaxed);
         let lines = self.lines.load(Relaxed);
         let digits = self.digits.load(Relaxed);
+        let chunk_carry = self.chunk_carry.load(Relaxed);
 
-        let start = self.bounds[j].load(Relaxed);
-        let end = self.bounds[j + 1].load(Relaxed);
-        if start >= end {
-            self.block_carry[j].0.store(false, Relaxed);
-            return;
-        }
+        let lo = t;
+        let hi = self.num_threads * 2 - 1 - t;
+        let lo_end = self.bounds[lo + 1].load(Relaxed);
+        let hi_start = self.bounds[hi].load(Relaxed);
+        let mut lo_c = self.bounds[lo].load(Relaxed);
+        let mut hi_c = self.bounds[hi + 1].load(Relaxed);
 
         let phi = digits % DPL;
         let idx = rev_index(phi);
@@ -465,30 +489,48 @@ impl SharedPacked {
             }
         };
 
-        let mut upper = load(q - start as isize);
-        let mut carry = false;
         let mut any_carried = false;
 
-        for k in start..end {
-            let m = q - 1 - k as isize;
+        let mut run_range = |start: usize, end: usize, carry_in: bool| -> bool {
+            let mut upper = load(q - start as isize);
+            let mut carry = carry_in;
+            for k in start..end {
+                let m = q - 1 - k as isize;
 
-            #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-            unsafe {
-                use std::arch::x86_64::{_MM_HINT_ET0, _MM_HINT_T0, _mm_prefetch};
-                _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(k + 16).cast());
-                _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
-                if !STREAM {
-                    _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
+                #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                unsafe {
+                    use std::arch::x86_64::{_MM_HINT_ET0, _MM_HINT_T0, _mm_prefetch};
+                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(k + 16).cast());
+                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
+                    if !STREAM {
+                        _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
+                    }
                 }
-            }
 
-            let lower = load(m);
-            let (r_lo, r_hi) = rev_operand(phi, idx, lower, upper);
-            let sum = add_resolve_line(unsafe { (*src.add(k)).0 }, r_lo, r_hi, carry);
-            unsafe { store_line::<STREAM>(dst, k, sum.packed) };
-            carry = sum.carry_out;
-            any_carried |= sum.carried;
-            upper = lower;
+                let lower = load(m);
+                let (r_lo, r_hi) = rev_operand(phi, idx, lower, upper);
+                let sum = add_resolve_line(unsafe { (*src.add(k)).0 }, r_lo, r_hi, carry);
+                unsafe { store_line::<STREAM>(dst, k, sum.packed) };
+                carry = sum.carry_out;
+                any_carried |= sum.carried;
+                upper = lower;
+            }
+            carry
+        };
+
+        let mut lo_carry = false;
+        while lo_c < lo_end || hi_c > hi_start {
+            if lo_c < lo_end {
+                let next = ((lo_c / CHUNK_LINES + 1) * CHUNK_LINES).min(lo_end);
+                lo_carry = run_range(lo_c, next, lo_carry);
+                lo_c = next;
+            }
+            if hi_c > hi_start {
+                let prev = ((hi_c - 1) / CHUNK_LINES * CHUNK_LINES).max(hi_start);
+                let carry = run_range(prev, hi_c, false);
+                unsafe { (*chunk_carry.add(hi + prev / CHUNK_LINES)).store(carry, Relaxed) };
+                hi_c = prev;
+            }
         }
 
         #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
@@ -498,21 +540,15 @@ impl SharedPacked {
             unsafe { std::arch::x86_64::_mm_sfence() };
         }
 
-        self.block_carry[j].0.store(carry, Relaxed);
+        self.block_carry[lo].0.store(lo_carry, Relaxed);
         if likely(any_carried) {
             self.ever_carried.store(true, Relaxed);
         }
     }
 
-    /// Both blocks of participant `t`, mirror-owned like the byte engine:
-    /// a block's backward stream reads the mirror of its own line range,
-    /// which is the participant's other block, so below the streaming
-    /// threshold the second block's reads hit the lines the first block
-    /// already pulled in.
     #[inline]
     fn run_blocks(&self, t: usize) {
-        self.run_block(t);
-        self.run_block(self.num_threads * 2 - 1 - t);
+        self.run_pair(t);
         self.barrier.wait();
     }
 }
@@ -541,6 +577,9 @@ fn increment_digits(a: &mut [Limb], d0: usize, end_digit: usize) -> (usize, bool
 /// participant 0. `step` is a drop-in equivalent of `PackedInt::step`.
 pub struct PackedEngine {
     shared: Arc<SharedPacked>,
+    /// Backing store of `SharedPacked::chunk_carry`, regrown by the
+    /// coordinator between passes when the number outgrows it.
+    chunk_carries: Box<[AtomicBool]>,
     handles: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -569,11 +608,15 @@ impl PackedEngine {
             })
             .collect();
 
-        Self { shared, handles }
+        Self {
+            shared,
+            chunk_carries: Box::new([]),
+            handles,
+        }
     }
 
     /// One packed reverse-and-add step. Returns whether any digit carried.
-    pub fn step<T: Allocator + Clone + Copy>(&self, x: &mut PackedInt<T>) -> bool {
+    pub fn step<T: Allocator + Clone + Copy>(&mut self, x: &mut PackedInt<T>) -> bool {
         let shared = &*self.shared;
         let num_blocks = shared.num_threads * 2;
 
@@ -582,6 +625,18 @@ impl PackedEngine {
         let out_digits = digits + grew as usize;
         let lines = digits.div_ceil(DPL);
         let lines_out = out_digits.div_ceil(DPL);
+
+        // every chunk-carry slot a high block can address this pass
+        let slots = num_blocks + lines / CHUNK_LINES + 1;
+        if unlikely(self.chunk_carries.len() < slots) {
+            cold_path();
+            self.chunk_carries = (0..slots.next_power_of_two())
+                .map(|_| AtomicBool::new(false))
+                .collect();
+        }
+        shared
+            .chunk_carry
+            .store(self.chunk_carries.as_ptr().cast_mut(), Relaxed);
 
         // Growth past the top line is decided by the prescan; the resize
         // zeroes the appended line, whose single digit is set after the
@@ -602,8 +657,23 @@ impl PackedEngine {
         shared.barrier.wait();
         shared.run_blocks(0);
 
-        // Serial carry resolution across blocks: a block whose true carry-in
-        // turned out to be one gets a decimal increment at its base.
+        // Serial carry resolution across the speculative ranges in ascending
+        // line order -- the low blocks whole, the high blocks chunk by chunk
+        // -- where a range whose true carry-in turned out to be one gets a
+        // decimal increment at its base.
+        let mut resolve = |carry: bool, chunk_start: usize, chunk_end: usize, carry_out: bool| {
+            let mut carry_out = carry_out;
+            if unlikely(carry) {
+                cold_path();
+                let (_, escaped) = increment_digits(
+                    &mut x.a[next],
+                    chunk_start * DPL,
+                    (chunk_end * DPL).min(out_digits),
+                );
+                carry_out |= escaped;
+            }
+            carry_out
+        };
         let mut carry = false;
         for j in 0..num_blocks {
             let start = shared.bounds[j].load(Relaxed);
@@ -611,14 +681,18 @@ impl PackedEngine {
             if start >= end {
                 continue; // an empty block passes the carry through
             }
-            let mut carry_out = shared.block_carry[j].0.load(Relaxed);
-            if unlikely(carry) {
-                cold_path();
-                let (_, escaped) =
-                    increment_digits(&mut x.a[next], start * DPL, (end * DPL).min(out_digits));
-                carry_out |= escaped;
+            if j < shared.num_threads {
+                let carry_out = shared.block_carry[j].0.load(Relaxed);
+                carry = resolve(carry, start, end, carry_out);
+            } else {
+                let mut c = start;
+                while c < end {
+                    let c_end = ((c / CHUNK_LINES + 1) * CHUNK_LINES).min(end);
+                    let carry_out = self.chunk_carries[j + c / CHUNK_LINES].load(Relaxed);
+                    carry = resolve(carry, c, c_end, carry_out);
+                    c = c_end;
+                }
             }
-            carry = carry_out;
         }
 
         if unlikely(carry) {
@@ -710,7 +784,7 @@ pub fn iterate_packed<T: Allocator + Clone + Copy>(
             );
         }
 
-        carried = unsafe { engine.as_ref().unwrap_unchecked() }.step(&mut current);
+        carried = unsafe { engine.as_mut().unwrap_unchecked() }.step(&mut current);
 
         if unlikely(i.is_multiple_of(LOG_MASK)) {
             let report = StatusReport {

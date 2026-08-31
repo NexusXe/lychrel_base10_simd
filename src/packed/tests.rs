@@ -112,7 +112,7 @@ fn test_packed_engine_matches_serial() {
     let mut rng = SmallRng::seed_from_u64(0x196);
 
     for num_threads in [1, 2, 3, 8] {
-        let engine = PackedEngine::new(num_threads);
+        let mut engine = PackedEngine::new(num_threads);
         for num_limbs in [1usize, 2, 3, 4, 5, 7, 16, 33, 64, 100] {
             let start = random_integer(num_limbs, &mut rng);
             let mut serial = PackedInt::from_integer(&start, Global);
@@ -143,7 +143,7 @@ fn test_packed_engine_matches_serial() {
 #[test]
 fn test_packed_engine_all_nines() {
     for num_threads in [2, 5] {
-        let engine = PackedEngine::new(num_threads);
+        let mut engine = PackedEngine::new(num_threads);
         for num_limbs in [1usize, 3, 8, 21] {
             let limbs = vec![Limb(LimbVec::splat(9)); num_limbs];
             let mut serial = PackedInt::from_integer(&Integer(limbs.clone()), Global);
@@ -169,7 +169,7 @@ fn test_packed_engine_all_nines() {
 /// The engine trajectory from 196 must match the serial kernel's.
 #[test]
 fn test_packed_engine_196_trajectory() {
-    let engine = PackedEngine::new(4);
+    let mut engine = PackedEngine::new(4);
     let mut serial = crate::integer!("196");
     let mut threaded = PackedInt::from_integer(&serial, Global);
     for step in 0..1000 {
