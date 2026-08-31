@@ -182,6 +182,97 @@ fn test_packed_engine_196_trajectory() {
     }
 }
 
+/// The fused double step must agree with two serial packed steps -- value,
+/// digit count, second-step carry flag, and the mid-value palindrome flag
+/// -- across thread counts and sizes that produce empty blocks, multi-chunk
+/// blocks, and growth.
+#[test]
+fn test_packed_step2_matches_serial() {
+    let mut rng = SmallRng::seed_from_u64(0x196);
+
+    for num_threads in [1, 2, 3, 8] {
+        let mut engine = PackedEngine::new(num_threads);
+        for num_limbs in [1usize, 2, 3, 4, 5, 7, 16, 33, 64, 100] {
+            let start = random_integer(num_limbs, &mut rng);
+            let mut serial = PackedInt::from_integer(&start, Global);
+            let mut fused = PackedInt::from_integer(&start, Global);
+
+            for step in 0..30 {
+                let carried_mid = serial.step();
+                let mid_pal = !carried_mid && serial.is_palindrome();
+                let carried_serial = serial.step();
+                let r = engine.step2(&mut fused);
+                let context =
+                    format!("{num_threads} threads, {num_limbs} limbs, double step {step}");
+                assert_eq!(carried_serial, r.carried, "carry flag diverged: {context}");
+                assert_eq!(mid_pal, r.palindrome_mid, "mid palindrome diverged: {context}");
+                assert_eq!(serial.digits, fused.digits, "digit count diverged: {context}");
+                assert!(
+                    fused.to_integer(Global) == serial.to_integer(Global),
+                    "value diverged: {context}"
+                );
+                assert_clean_padding(&fused, &context);
+            }
+        }
+    }
+}
+
+/// All-nines inputs push a carry through every line of both fused steps.
+#[test]
+fn test_packed_step2_all_nines() {
+    for num_threads in [2, 5] {
+        let mut engine = PackedEngine::new(num_threads);
+        for num_limbs in [1usize, 3, 8, 21] {
+            let limbs = vec![Limb(LimbVec::splat(9)); num_limbs];
+            let mut serial = PackedInt::from_integer(&Integer(limbs.clone()), Global);
+            let mut fused = PackedInt::from_integer(&Integer(limbs), Global);
+
+            for step in 0..4 {
+                serial.step();
+                let carried_serial = serial.step();
+                let r = engine.step2(&mut fused);
+                let context = format!("all-nines, {num_threads} threads, {num_limbs} limbs, double step {step}");
+                assert_eq!(carried_serial, r.carried, "{context}");
+                assert!(
+                    fused.to_integer(Global) == serial.to_integer(Global),
+                    "value diverged: {context}"
+                );
+                assert_clean_padding(&fused, &context);
+            }
+        }
+    }
+}
+
+/// The fused trajectory from 196 must match the serial kernel's.
+#[test]
+fn test_packed_step2_196_trajectory() {
+    let mut engine = PackedEngine::new(4);
+    let mut serial = crate::integer!("196");
+    let mut fused = PackedInt::from_integer(&serial, Global);
+    for step in 0..500 {
+        serial.fused_reverse_add_asm_interleave();
+        serial.fused_reverse_add_asm_interleave();
+        engine.step2(&mut fused);
+        assert!(
+            fused.to_integer(Global) == serial,
+            "value diverged at double step {step}"
+        );
+    }
+}
+
+/// A fused step whose intermediate value is a palindrome must say so: 12
+/// reverse-adds to 33 with no carry.
+#[test]
+fn test_packed_step2_mid_palindrome() {
+    let mut engine = PackedEngine::new(2);
+    for (seed, expect) in [("12", true), ("10", true), ("196", false)] {
+        let integer: Integer<Global> = crate::integer!(seed);
+        let mut packed = PackedInt::from_integer(&integer, Global);
+        let r = engine.step2(&mut packed);
+        assert_eq!(r.palindrome_mid, expect, "{seed}");
+    }
+}
+
 /// Palindromes are detected exactly when every digit equals its mirror.
 #[test]
 fn test_packed_palindrome() {
