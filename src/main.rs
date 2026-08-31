@@ -109,7 +109,8 @@ Run options:
 --stop-at           specify iteration target number (0 means no limit; default: set by run type)
 --no-checkpoint     don't start at a checkpoint, start at iteration 1 with seed instead
 --yield             write output to file regardless of whether a palindrome was found
---threads <n>       number of worker threads once the integer is large enough (default: 1)
+--threads <n>       number of worker threads once the integer is large enough
+                    (0 = one per physical core; default: 0)
 
     Run type selection:
     --bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_SHORT}`
@@ -201,7 +202,7 @@ fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
         stop_at: None,
         no_checkpoint: false,
         write_yield: false,
-        num_threads: 1,
+        num_threads: 0,
         read_path: None,
         read_verify: false,
     };
@@ -244,10 +245,6 @@ fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
             "--threads" => {
                 skip_operand = true;
                 args.num_threads = parse_operand(argv, idx, "thread count");
-                if args.num_threads == 0 {
-                    eprintln!("Please specify a thread count of at least 1");
-                    std::process::exit(1);
-                }
             }
             "--bench" => args.run_type = RunType::Bench,
             "--long-bench" => args.run_type = RunType::LongBench,
@@ -540,6 +537,12 @@ SIMD Lychrel Number Search
             }
 
             println!("limit: {stop_at:}");
+
+            let num_threads = if num_threads == 0 {
+                parallel::auto_threads()
+            } else {
+                num_threads
+            };
 
             let (tx, rx) = mpsc::channel::<parallel::StatusReport>();
 

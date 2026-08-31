@@ -221,6 +221,44 @@ fn allowed_cpus() -> &'static [usize] {
     &[]
 }
 
+/// The number of distinct physical cores among `cpus`, from sysfs topology.
+/// Falls back to the plain CPU count where topology is unreadable.
+#[cfg(target_os = "linux")]
+fn physical_cores_among(cpus: &[usize]) -> usize {
+    let mut cores = std::collections::HashSet::new();
+    for &cpu in cpus {
+        let read = |leaf: &str| {
+            std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/topology/{leaf}"))
+                .ok()
+                .and_then(|s| s.trim().parse::<usize>().ok())
+        };
+        match (read("physical_package_id"), read("core_id")) {
+            (Some(package), Some(core)) => {
+                cores.insert((package, core));
+            }
+            _ => return cpus.len(),
+        }
+    }
+    cores.len().max(1)
+}
+
+/// Resolves `--threads 0`: one thread per physical core available to the
+/// process. SMT siblings share the vector pipes and the L1/L2 this kernel
+/// saturates; measured on the 9950X3D, 32 threads lose to 16 by 20-40%
+/// cache-resident and by 13% at DRAM-bound sizes.
+#[must_use]
+pub fn auto_threads() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        let cpus = allowed_cpus();
+        if !cpus.is_empty() {
+            return physical_cores_among(cpus);
+        }
+    }
+
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
 /// A persistent pool of worker threads executing the fused reverse-and-add in
 /// lockstep with the calling thread. The caller is participant 0; `step` is
 /// a drop-in equivalent of `Integer::fused_reverse_add_asm_interleave`.
