@@ -6,16 +6,16 @@
 //! funnel permutation -- and writes the sum slot-aligned into the other
 //! buffer.
 //!
-//! Both passes walk mirror block pairs as interleaved chunks, so the
+//! All passes walk mirror block pairs as interleaved chunks, so the
 //! backward stream reads lines its round's partner chunk just pulled into
 //! cache and each source line costs one memory fetch. Above the streaming
-//! threshold the engine additionally fuses two iterations per pass
-//! (`step2`): each round materializes the first step's output for its
-//! chunk pair in per-thread scratch and computes the second step from it,
-//! so the number crosses DRAM once -- one read and one write -- per TWO
-//! iterations, with cross-iteration carry misspeculation repaired after
-//! the pass from scalar ground truth (a few dozen lines per pass,
-//! independent of size).
+//! threshold the engine additionally fuses iterations per pass (`step2`,
+//! `step3`): each round materializes the intermediate steps' output for
+//! its chunk pair in per-thread scratch, one level per fused step, and
+//! computes the final step from the last level, so the number crosses
+//! DRAM once -- one read and one write -- per two or three iterations,
+//! with cross-iteration carry misspeculation repaired after the pass from
+//! scalar ground truth (a few dozen lines per pass, independent of size).
 //!
 //! Packed line layout (one 64-byte `Limb` holding 128 digits): digit `p` of
 //! the line lives in byte `p` low nibble for `p < 64`, byte `p - 64` high
@@ -292,13 +292,24 @@ struct SharedPacked {
     /// Whether the pass fuses two iterations (`run_pair2`) or runs one
     /// (`run_pair`).
     fused: AtomicBool,
-    /// Fused pass only: the first step's exact digit count.
+    /// Whether the pass fuses three iterations (`run_pair3`); takes
+    /// precedence over `fused`.
+    fused3: AtomicBool,
+    /// Fused passes only: the first step's exact digit count.
     digits1: AtomicUsize,
-    /// Fused pass only: whether any digit carried in the first step.
+    /// Triple pass only: the second step's exact digit count.
+    digits2: AtomicUsize,
+    /// Fused passes only: whether any digit carried in the first step.
     carried1: AtomicBool,
-    /// Fused pass only: whether every first-step digit equaled its mirror,
+    /// Triple pass only: whether any digit carried in the second step, as
+    /// the pass saw it (repair recomputes it exactly on misspeculation).
+    carried2: AtomicBool,
+    /// Fused passes only: whether every first-step digit equaled its mirror,
     /// AND-accumulated across threads during the second step's add.
     pal1: AtomicBool,
+    /// Triple pass only: `pal1` for the second step's digits, accumulated
+    /// during the third step's add.
+    pal2: AtomicBool,
     /// 2 * num_threads + 1 entries: block boundaries in lines.
     bounds: Box<[AtomicUsize]>,
     /// 2 * num_threads entries: each block's speculative carry-out. Only
@@ -451,9 +462,13 @@ impl SharedPacked {
             stop: AtomicBool::new(false),
             ever_carried: AtomicBool::new(false),
             fused: AtomicBool::new(false),
+            fused3: AtomicBool::new(false),
             digits1: AtomicUsize::new(0),
+            digits2: AtomicUsize::new(0),
             carried1: AtomicBool::new(false),
+            carried2: AtomicBool::new(false),
             pal1: AtomicBool::new(true),
+            pal2: AtomicBool::new(true),
             bounds: (0..=num_threads * 2).map(|_| AtomicUsize::new(0)).collect(),
             block_carry: (0..num_threads * 2)
                 .map(|_| Padded(AtomicBool::new(false)))
@@ -571,12 +586,22 @@ impl SharedPacked {
 
     #[inline]
     fn run_blocks(&self, t: usize, scratch: &mut FusedScratch) {
-        if self.fused.load(Relaxed) {
+        if self.fused3.load(Relaxed) {
+            self.run_pair3(t, scratch);
+        } else if self.fused.load(Relaxed) {
             self.run_pair2(t, scratch);
         } else {
             self.run_pair(t);
         }
         self.barrier.wait();
+    }
+
+    fn run_pair3(&self, t: usize, scratch: &mut FusedScratch) {
+        if self.lines.load(Relaxed) >= STREAM_MIN_LINES {
+            self.run_pair3_inner::<true>(t, scratch);
+        } else {
+            self.run_pair3_inner::<false>(t, scratch);
+        }
     }
 
     fn run_pair2(&self, t: usize, scratch: &mut FusedScratch) {
@@ -631,7 +656,7 @@ impl SharedPacked {
             }
         };
 
-        let FusedScratch { lo: scratch_lo, hi: scratch_hi } = scratch;
+        let FusedScratch { lo: scratch_lo, hi: scratch_hi, .. } = scratch;
 
         let mut carried1 = false;
         let mut carried2 = false;
@@ -753,6 +778,230 @@ impl SharedPacked {
             self.pal1.store(false, Relaxed);
         }
     }
+
+    /// The fused three-iteration pass over participant `t`'s mirror block
+    /// pair: `run_pair2_inner` with one more scratch level. Per round,
+    /// phase A materializes the first-step ranges the round consumes into
+    /// scratch (reading the input buffer), phase B computes the
+    /// second-step ranges from them into the second scratch level, and
+    /// phase C computes the round's two third-step output chunks from
+    /// those and stores them slot-aligned into the destination -- one read
+    /// and one write of the number per THREE iterations.
+    ///
+    /// Every scratch range at both levels and every high output chunk
+    /// speculates a carry-in of zero; the low output chain runs unbroken.
+    /// Scratch misspeculation at either level leaks wrong digits into
+    /// consumed operands and is repaired after the pass by the
+    /// coordinator (`repair_fused3`), which replays `for_each_round3`.
+    fn run_pair3_inner<const STREAM: bool>(&self, t: usize, scratch: &mut FusedScratch) {
+        let src = self.a_src.load(Relaxed);
+        let dst = self.a_dst.load(Relaxed);
+        let lines = self.lines.load(Relaxed);
+        let digits = self.digits.load(Relaxed);
+        let digits1 = self.digits1.load(Relaxed);
+        let digits2 = self.digits2.load(Relaxed);
+        let chunk_carry = self.chunk_carry.load(Relaxed);
+
+        let lo = t;
+        let hi = self.num_threads * 2 - 1 - t;
+        let lo_bounds = (self.bounds[lo].load(Relaxed), self.bounds[lo + 1].load(Relaxed));
+        let hi_bounds = (self.bounds[hi].load(Relaxed), self.bounds[hi + 1].load(Relaxed));
+
+        let phi0 = digits % DPL;
+        let idx0 = rev_index(phi0);
+        let q0 = (digits / DPL) as isize;
+        let phi1 = digits1 % DPL;
+        let idx1 = rev_index(phi1);
+        let q1 = digits1 / DPL;
+        let q1_lines = digits1.div_ceil(DPL);
+        let phi2 = digits2 % DPL;
+        let idx2 = rev_index(phi2);
+        let q2 = digits2 / DPL;
+        let q2_lines = digits2.div_ceil(DPL);
+
+        let load_a = |m: isize| -> (LimbVec, LimbVec) {
+            if m >= 0 && (m as usize) < lines {
+                unpack_line(unsafe { (*src.offset(m)).0 })
+            } else {
+                (LimbVec::splat(0), LimbVec::splat(0))
+            }
+        };
+
+        let FusedScratch {
+            lo: scratch_lo,
+            hi: scratch_hi,
+            lo2: scratch_lo2,
+            hi2: scratch_hi2,
+        } = scratch;
+
+        let mut carried1 = false;
+        let mut carried2 = false;
+        let mut carried3 = false;
+        let mut all_eq1 = true;
+        let mut all_eq2 = true;
+        let mut lo_carry = false;
+        let hi_stride = fused_hi_stride(q2_lines, self.num_threads * 2);
+        let mut hi_ord = 0usize;
+
+        for_each_round3(lo_bounds, hi_bounds, q2, q2_lines, q1, q1_lines, |round| {
+            // phase A: first-step lines for both ranges, into scratch
+            for (range, scratch) in [
+                (round.r1_lo, &mut *scratch_lo),
+                (round.r1_hi, &mut *scratch_hi),
+            ] {
+                let (s, e) = range;
+                if s >= e {
+                    continue;
+                }
+                assert!(e - s <= SCRATCH_LINES, "fused scratch range overflow");
+                let mut upper = load_a(q0 - s as isize);
+                let mut carry = false;
+                for j in s..e {
+                    let m = q0 - 1 - j as isize;
+
+                    #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                    unsafe {
+                        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(j + 16).cast());
+                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
+                    }
+
+                    let lower = load_a(m);
+                    let (r_lo, r_hi) = rev_operand(phi0, idx0, lower, upper);
+                    let fwd = if j < lines {
+                        unsafe { (*src.add(j)).0 }
+                    } else {
+                        LimbVec::splat(0)
+                    };
+                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
+                    scratch[j - s] = Limb(sum.packed);
+                    carry = sum.carry_out;
+                    carried1 |= sum.carried;
+                    upper = lower;
+                }
+            }
+
+            // phase B: second-step lines for both ranges, from the first
+            // scratch level into the second. A low-range line reads forward
+            // from the low production and backward from the high one; a
+            // high-range line the reverse.
+            for (range, fwd_range, fwd_scr, rev_range, rev_scr, out) in [
+                (round.r2_lo, round.r1_lo, &*scratch_lo, round.r1_hi, &*scratch_hi, &mut *scratch_lo2),
+                (round.r2_hi, round.r1_hi, &*scratch_hi, round.r1_lo, &*scratch_lo, &mut *scratch_hi2),
+            ] {
+                let (s, e) = range;
+                if s >= e {
+                    continue;
+                }
+                assert!(e - s <= SCRATCH_LINES, "fused scratch range overflow");
+                let load_s = |m: isize| -> (LimbVec, LimbVec) {
+                    if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
+                        unpack_line(rev_scr[m as usize - rev_range.0].0)
+                    } else {
+                        debug_assert!(
+                            m < 0 || m as usize >= q1_lines,
+                            "fused pass read outside its scratch ranges"
+                        );
+                        (LimbVec::splat(0), LimbVec::splat(0))
+                    }
+                };
+                let mut upper = load_s(q1 as isize - s as isize);
+                let mut carry = false;
+                for j in s..e {
+                    let m = q1 as isize - 1 - j as isize;
+                    let lower = load_s(m);
+                    let (r_lo, r_hi) = rev_operand(phi1, idx1, lower, upper);
+                    let fwd = fwd_scr[j - fwd_range.0].0;
+                    let (f_lo, f_hi) = unpack_line(fwd);
+                    all_eq1 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
+                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
+                    out[j - s] = Limb(sum.packed);
+                    carry = sum.carry_out;
+                    carried2 |= sum.carried;
+                    upper = lower;
+                }
+            }
+
+            // phase C: the round's two output chunks, from the second
+            // scratch level.
+            for (chunk, fwd_range, fwd_scr, rev_range, rev_scr, is_hi) in [
+                (round.lo, round.r2_lo, &*scratch_lo2, round.r2_hi, &*scratch_hi2, false),
+                (round.hi, round.r2_hi, &*scratch_hi2, round.r2_lo, &*scratch_lo2, true),
+            ] {
+                let (x0, x1) = chunk;
+                if x0 >= x1 {
+                    continue;
+                }
+                let load_s = |m: isize| -> (LimbVec, LimbVec) {
+                    if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
+                        unpack_line(rev_scr[m as usize - rev_range.0].0)
+                    } else {
+                        debug_assert!(
+                            m < 0 || m as usize >= q2_lines,
+                            "fused pass read outside its scratch ranges"
+                        );
+                        (LimbVec::splat(0), LimbVec::splat(0))
+                    }
+                };
+                let mut upper = load_s(q2 as isize - x0 as isize);
+                let mut carry = if is_hi { false } else { lo_carry };
+                for k in x0..x1 {
+                    let m = q2 as isize - 1 - k as isize;
+
+                    #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                    if !STREAM {
+                        unsafe {
+                            use std::arch::x86_64::{_MM_HINT_ET0, _mm_prefetch};
+                            _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
+                        }
+                    }
+
+                    let lower = load_s(m);
+                    let (r_lo, r_hi) = rev_operand(phi2, idx2, lower, upper);
+                    let fwd = fwd_scr[k - fwd_range.0].0;
+                    let (f_lo, f_hi) = unpack_line(fwd);
+                    all_eq2 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
+                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
+                    unsafe { store_line::<STREAM>(dst, k, sum.packed) };
+                    carry = sum.carry_out;
+                    carried3 |= sum.carried;
+                    upper = lower;
+                }
+                if is_hi {
+                    assert!(hi_ord < hi_stride, "fused chunk ordinal overflow");
+                    let slot = (hi - self.num_threads) * hi_stride + hi_ord;
+                    unsafe { (*chunk_carry.add(slot)).store(carry, Relaxed) };
+                    hi_ord += 1;
+                } else {
+                    lo_carry = carry;
+                }
+            }
+        });
+
+        #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+        if STREAM {
+            // non-temporal stores are weakly ordered; drain them before the
+            // end barrier publishes the buffer
+            unsafe { std::arch::x86_64::_mm_sfence() };
+        }
+
+        self.block_carry[lo].0.store(lo_carry, Relaxed);
+        if likely(carried1) {
+            self.carried1.store(true, Relaxed);
+        }
+        if likely(carried2) {
+            self.carried2.store(true, Relaxed);
+        }
+        if likely(carried3) {
+            self.ever_carried.store(true, Relaxed);
+        }
+        if !all_eq1 {
+            self.pal1.store(false, Relaxed);
+        }
+        if !all_eq2 {
+            self.pal2.store(false, Relaxed);
+        }
+    }
 }
 
 /// Scalar ground truth for the fused two-iteration step's repair path. All
@@ -802,6 +1051,63 @@ fn s2_sum(a: &[Limb], l: usize, l1: usize, d: usize) -> u8 {
     }
 }
 
+/// The true carry into slot `d` of the second step's output, by the same
+/// backward walk as `s1_carry_into` one level up.
+fn s2_carry_into(a: &[Limb], l: usize, l1: usize, d: usize) -> bool {
+    for j in (0..d).rev() {
+        let s = s2_sum(a, l, l1, j);
+        if s != 9 {
+            return s > 9;
+        }
+    }
+    false
+}
+
+/// The true digit at slot `d` of the second step's output, `d <= l1`.
+#[inline]
+fn s2_digit(a: &[Limb], l: usize, l1: usize, d: usize) -> u8 {
+    (s2_sum(a, l, l1, d) + u8::from(s2_carry_into(a, l, l1, d))) % 10
+}
+
+/// The digit sum feeding slot `d` of the third step's output, from true
+/// second-step digits. `l2` is the second step's exact digit count.
+#[inline]
+fn s3_sum(a: &[Limb], l: usize, l1: usize, l2: usize, d: usize) -> u8 {
+    if d < l2 {
+        s2_digit(a, l, l1, d) + s2_digit(a, l, l1, l2 - 1 - d)
+    } else {
+        0
+    }
+}
+
+/// Whether any digit of the true second step carries: some digit sum
+/// reaches ten (propagation alone cannot start a carry). The sums are
+/// mirror-symmetric, so half the range decides; the scan exits at the
+/// first generator, which sits within a few digits of the bottom for
+/// anything but a near-palindromic step.
+fn s2_generates(a: &[Limb], l: usize, l1: usize) -> bool {
+    (0..l1.div_ceil(2)).any(|d| s2_sum(a, l, l1, d) >= 10)
+}
+
+/// `s2_generates` one level up: whether any digit of the true third step
+/// carries.
+fn s3_generates(a: &[Limb], l: usize, l1: usize, l2: usize) -> bool {
+    (0..l2.div_ceil(2)).any(|d| s3_sum(a, l, l1, l2, d) >= 10)
+}
+
+/// Whether the second reverse-and-add of a fused pass gains a digit,
+/// decided exactly before the pass from the input buffer alone: the same
+/// descending scan as `prescan_grow`, over true first-step digits.
+fn prescan_grow2(a: &[Limb], l: usize, l1: usize) -> bool {
+    for d in (0..l1).rev() {
+        let s = s2_sum(a, l, l1, d);
+        if s != 9 {
+            return s > 9;
+        }
+    }
+    false
+}
+
 /// One chunk pair of the interleaved walk: the two output chunks of the
 /// round and, for the fused pass, the two first-step ranges that feed them.
 /// `r_lo` covers the low chunk's forward reads and the high chunk's
@@ -816,15 +1122,19 @@ struct Round {
 }
 
 /// Lines per fused scratch buffer: a round's ranges exceed a chunk only by
-/// the block-bound rounding.
-const SCRATCH_LINES: usize = CHUNK_LINES + 8;
+/// the block-bound rounding and, for the triple pass's first-step ranges,
+/// one more level of mirror slack.
+const SCRATCH_LINES: usize = CHUNK_LINES + 16;
 
-/// Per-participant scratch of the fused pass: the two first-step ranges a
-/// round consumes. Heap-allocated once per worker so the chunk size is not
-/// limited by thread stacks.
+/// Per-participant scratch of the fused passes: the two first-step ranges a
+/// round consumes, and for the triple pass the two second-step ranges
+/// derived from them. Heap-allocated once per worker so the chunk size is
+/// not limited by thread stacks.
 struct FusedScratch {
     lo: Box<[Limb]>,
     hi: Box<[Limb]>,
+    lo2: Box<[Limb]>,
+    hi2: Box<[Limb]>,
 }
 
 impl FusedScratch {
@@ -832,6 +1142,8 @@ impl FusedScratch {
         Self {
             lo: vec![Limb::new(); SCRATCH_LINES].into_boxed_slice(),
             hi: vec![Limb::new(); SCRATCH_LINES].into_boxed_slice(),
+            lo2: vec![Limb::new(); SCRATCH_LINES].into_boxed_slice(),
+            hi2: vec![Limb::new(); SCRATCH_LINES].into_boxed_slice(),
         }
     }
 }
@@ -926,6 +1238,54 @@ fn for_each_round(
         lo_c = lo.1;
         hi_c = hi.0;
     }
+}
+
+/// One chunk pair of the triple pass's walk: the round's two output
+/// chunks, the two second-step ranges that feed them, and the two
+/// first-step ranges that feed those. All in output line space of their
+/// respective levels; any range may be empty.
+#[derive(Clone, Copy)]
+struct Round3 {
+    lo: (usize, usize),
+    hi: (usize, usize),
+    r2_lo: (usize, usize),
+    r2_hi: (usize, usize),
+    r1_lo: (usize, usize),
+    r1_hi: (usize, usize),
+}
+
+/// `for_each_round` for the triple pass: the chunk pairing and the
+/// second-step ranges mirror through `q2` (the third step's mirror line),
+/// and each first-step range is its second-step range extended by the
+/// mirror through `q1` of the partner's -- the lines phase B's backward
+/// stream reads from the other scratch buffer.
+fn for_each_round3(
+    lo_b: (usize, usize),
+    hi_b: (usize, usize),
+    q2: usize,
+    q2_lines: usize,
+    q1: usize,
+    q1_lines: usize,
+    mut f: impl FnMut(Round3),
+) {
+    let bwd1_of = |(s, e): (usize, usize)| -> (usize, usize) {
+        if s >= e {
+            return (0, 0);
+        }
+        let lo = (q1 as isize - e as isize).max(0) as usize;
+        let hi = ((q1 as isize - s as isize + 1).max(0) as usize).min(q1_lines);
+        (lo, hi)
+    };
+    for_each_round(lo_b, hi_b, q2, q2_lines, |round| {
+        f(Round3 {
+            lo: round.lo,
+            hi: round.hi,
+            r2_lo: round.r_lo,
+            r2_hi: round.r_hi,
+            r1_lo: interval_union(round.r_lo, bwd1_of(round.r_hi)),
+            r1_hi: interval_union(round.r_hi, bwd1_of(round.r_lo)),
+        });
+    });
 }
 
 /// Adds one to digit `d0` and propagates the decimal carry upward through
@@ -1298,6 +1658,7 @@ impl PackedEngine {
             affected: Vec<usize>,
         }
         let mut consumers: Vec<Consumer> = Vec::new();
+        let mut any_rip = false;
 
         let hi_stride = fused_hi_stride(q1_lines, num_blocks);
         for t in 0..num_threads {
@@ -1317,6 +1678,7 @@ impl PackedEngine {
                     return;
                 }
                 cold_path();
+                any_rip = true;
                 // consumed position p reaches output slot p through the
                 // forward stream and slot l1 - 1 - p through the backward
                 for (chunk, fwd, bwd, hi_side) in [
@@ -1361,6 +1723,17 @@ impl PackedEngine {
                     });
                 }
             });
+        }
+
+        if unlikely(any_rip) {
+            // Wrong consumed digits make the pass's second-step sums -- and
+            // with them the accumulated carry flag -- untrustworthy in both
+            // directions, and a spuriously TRUE flag would silence the
+            // caller's palindrome check on the repaired value. The exact
+            // flag is whether any true sum generates, which the scan below
+            // decides within a few digits unless the step really is
+            // carry-free.
+            shared.ever_carried.store(s2_generates(src, l, l1), Relaxed);
         }
 
         if likely(consumers.is_empty()) {
@@ -1438,6 +1811,416 @@ impl PackedEngine {
             }
         }
     }
+
+    /// One fused triple step: three reverse-and-add iterations with one
+    /// read of the current buffer and one write of the other, both
+    /// intermediate values living only in per-thread scratch. Returns
+    /// whether any digit carried in the third iteration and whether either
+    /// unmaterialized intermediate value was a palindrome.
+    pub fn step3<T: Allocator + Clone + Copy>(&mut self, x: &mut PackedInt<T>) -> Step3Result {
+        let shared = &*self.shared;
+        let num_blocks = shared.num_threads * 2;
+
+        let l = x.digits;
+        let grew = x.prescan_grow();
+        let l1 = l + grew as usize;
+        let grew2 = prescan_grow2(&x.a[x.cur], l, l1);
+        let l2 = l1 + grew2 as usize;
+        let lines = l.div_ceil(DPL);
+        let q1 = l1 / DPL;
+        let q1_lines = l1.div_ceil(DPL);
+        let q2 = l2 / DPL;
+        let q2_lines = l2.div_ceil(DPL);
+        // covers slot l2, where the third step's growth lands
+        let lines_out = (l2 + 1).div_ceil(DPL);
+
+        let next = 1 - x.cur;
+        x.a[next].resize(lines_out, Limb::new());
+
+        let slots = shared.num_threads * fused_hi_stride(q2_lines, num_blocks);
+        if unlikely(self.chunk_carries.len() < slots) {
+            cold_path();
+            self.chunk_carries = (0..slots.next_power_of_two())
+                .map(|_| AtomicBool::new(false))
+                .collect();
+        }
+        shared
+            .chunk_carry
+            .store(self.chunk_carries.as_ptr().cast_mut(), Relaxed);
+
+        shared.a_src.store(x.a[x.cur].as_ptr().cast_mut(), Relaxed);
+        shared.a_dst.store(x.a[next].as_mut_ptr(), Relaxed);
+        shared.lines.store(lines, Relaxed);
+        shared.digits.store(l, Relaxed);
+        shared.digits1.store(l1, Relaxed);
+        shared.digits2.store(l2, Relaxed);
+        shared.fused3.store(true, Relaxed);
+        shared.ever_carried.store(false, Relaxed);
+        shared.carried1.store(false, Relaxed);
+        shared.carried2.store(false, Relaxed);
+        shared.pal1.store(true, Relaxed);
+        shared.pal2.store(true, Relaxed);
+        for k in 0..=num_blocks {
+            shared.bounds[k].store(k * q2_lines / num_blocks, Relaxed);
+        }
+
+        shared.barrier.wait();
+        shared.run_blocks(0, &mut self.scratch);
+        shared.fused3.store(false, Relaxed);
+
+        let repaired = self.repair_fused3(x, l, l1, l2, q1, q1_lines, q2, q2_lines);
+
+        let carry = self.resolve_carries_fused(&mut x.a[next], l2 + 1, q2, q2_lines);
+        if unlikely(carry) {
+            // only reachable when the second step's top line was full to the
+            // brim; the escaping carry is the third step's growth digit
+            cold_path();
+            debug_assert!(l2.is_multiple_of(DPL));
+            set_digit(&mut x.a[next], l2, 1);
+        }
+
+        let l3 = l2 + usize::from(digit_at(&x.a[next], l2) != 0);
+        x.digits = l3;
+        x.cur = next;
+
+        debug_assert!(digit_at(&x.a[next], l3 - 1) != 0, "fused step lost growth");
+
+        let carried1 = shared.carried1.load(Relaxed);
+        Step3Result {
+            carried: repaired.carried3,
+            palindrome_mid1: !carried1 && shared.pal1.load(Relaxed),
+            palindrome_mid2: !repaired.carried2
+                && (!repaired.pal2_trusted || shared.pal2.load(Relaxed)),
+        }
+    }
+
+    /// Repairs the triple pass's misspeculation at both scratch levels.
+    /// Level-1 range bases resolve exactly as in `repair_fused`; their
+    /// ripples, together with wrongly speculated level-2 range bases, make
+    /// second-step scratch digits wrong, which a dual chain walk (the
+    /// pass's values against ground truth) enumerates per range. Every
+    /// wrong second-step digit's consumers -- its own line through the
+    /// forward stream and its mirror's through the backward -- are then
+    /// recomputed from exact third-step ground truth, walking upward until
+    /// the recomputed line matches what the pass stored; a walk reaching
+    /// its chunk's speculation boundary corrects the recorded carry-out
+    /// instead. Also returns exact second- and third-step carry flags:
+    /// misspeculation taints the pass's accumulated flags, so they are
+    /// recomputed from true digit sums (any sum of ten generates), which
+    /// exits within a few digits unless the step really is carry-free.
+    fn repair_fused3<T: Allocator + Clone + Copy>(
+        &self,
+        x: &mut PackedInt<T>,
+        l: usize,
+        l1: usize,
+        l2: usize,
+        q1: usize,
+        q1_lines: usize,
+        q2: usize,
+        q2_lines: usize,
+    ) -> Repair3 {
+        let shared = &*self.shared;
+        let num_threads = shared.num_threads;
+        let num_blocks = num_threads * 2;
+        let bound = |j: usize| shared.bounds[j].load(Relaxed);
+
+        let [b0, b1] = &mut x.a;
+        let (src, dst) = if x.cur == 0 { (&*b0, b1) } else { (&*b1, b0) };
+
+        // level-1 ripples, exactly as in `repair_fused`
+        let ripple1 = |(base_line, end_line): (usize, usize)| -> Vec<(usize, u8)> {
+            let base = base_line * DPL;
+            if base_line == 0 || base_line >= end_line || base >= l1 {
+                return Vec::new();
+            }
+            if likely(!s1_carry_into(src, l, base)) {
+                return Vec::new();
+            }
+            cold_path();
+            let top = (end_line * DPL).min(l1);
+            let mut out = Vec::new();
+            let mut c = 0u8;
+            for p in base..top {
+                let s = s1_sum(src, l, p) + c;
+                let spec = s % 10;
+                c = u8::from(s >= 10);
+                out.push((p, spec));
+                if spec != 9 {
+                    break;
+                }
+            }
+            out
+        };
+
+        // the first-step digit the pass consumed at position `p` through a
+        // stream with the given ripple list
+        let p1c = |p: usize, rips: &[(usize, u8)]| -> u8 {
+            for &(rp, spec) in rips {
+                if rp == p {
+                    return spec;
+                }
+            }
+            s1_digit(src, l, p)
+        };
+
+        struct Consumer3 {
+            /// Wrong second-step digits, with the values the pass consumed,
+            /// of the production this chunk's forward stream reads.
+            fwd_w2: Vec<(usize, u8)>,
+            /// The same for the backward stream's production.
+            bwd_w2: Vec<(usize, u8)>,
+            spec_base: usize,
+            cap: usize,
+            slot: usize,
+            hi_side: bool,
+            affected: Vec<usize>,
+        }
+        let mut consumers: Vec<Consumer3> = Vec::new();
+        let mut any_rip1 = false;
+        let mut any_wrong2 = false;
+
+        let hi_stride = fused_hi_stride(q2_lines, num_blocks);
+        for t in 0..num_threads {
+            let lo_j = t;
+            let hi_j = num_blocks - 1 - t;
+            let lo_b = (bound(lo_j), bound(lo_j + 1));
+            let hi_b = (bound(hi_j), bound(hi_j + 1));
+            let mut hi_ord = 0usize;
+            for_each_round3(lo_b, hi_b, q2, q2_lines, q1, q1_lines, |round| {
+                let ord = hi_ord;
+                if round.hi.0 < round.hi.1 {
+                    hi_ord += 1;
+                }
+                let rip1_lo = ripple1(round.r1_lo);
+                let rip1_hi = ripple1(round.r1_hi);
+                let rips_clean = rip1_lo.is_empty() && rip1_hi.is_empty();
+                any_rip1 |= !rips_clean;
+
+                // wrong second-step digits of one production, by a dual
+                // chain walk (pass values against ground truth) from each
+                // seed: the range base if its true carry-in was one, and
+                // every position whose consumed first-step digit a ripple
+                // changed. Truncated at the range top: consumers beyond it
+                // read other productions.
+                let wrong2 = |r2: (usize, usize),
+                              own: &[(usize, u8)],
+                              other: &[(usize, u8)]|
+                 -> Vec<(usize, u8)> {
+                    if r2.0 >= r2.1 {
+                        return Vec::new();
+                    }
+                    let base = r2.0 * DPL;
+                    let top = r2.1 * DPL;
+                    let mut seeds: Vec<usize> = Vec::new();
+                    if base > 0 && unlikely(s2_carry_into(src, l, l1, base)) {
+                        seeds.push(base);
+                    }
+                    for &(p, _) in own {
+                        if p >= base && p < top {
+                            seeds.push(p);
+                        }
+                    }
+                    for &(p, _) in other {
+                        let d = l1 - 1 - p;
+                        if d >= base && d < top {
+                            seeds.push(d);
+                        }
+                    }
+                    if likely(seeds.is_empty()) {
+                        return Vec::new();
+                    }
+                    cold_path();
+                    seeds.sort_unstable();
+                    seeds.dedup();
+                    let psum = |d: usize| -> u8 {
+                        if d < l1 {
+                            p1c(d, own) + p1c(l1 - 1 - d, other)
+                        } else {
+                            0
+                        }
+                    };
+                    let mut out = Vec::new();
+                    let mut done_until = base;
+                    for &s0 in &seeds {
+                        if s0 < done_until {
+                            continue;
+                        }
+                        let mut pc = false;
+                        for e in (base..s0).rev() {
+                            let s = psum(e);
+                            if s != 9 {
+                                pc = s > 9;
+                                break;
+                            }
+                        }
+                        let mut tc = s2_carry_into(src, l, l1, s0);
+                        let mut d = s0;
+                        loop {
+                            let ps = psum(d) + u8::from(pc);
+                            let ts = s2_sum(src, l, l1, d) + u8::from(tc);
+                            let pd = ps % 10;
+                            let td = ts % 10;
+                            pc = ps >= 10;
+                            tc = ts >= 10;
+                            if pd != td {
+                                out.push((d, pd));
+                            }
+                            d += 1;
+                            if d >= top || (pd == td && pc == tc) {
+                                break;
+                            }
+                        }
+                        done_until = d;
+                    }
+                    out
+                };
+                let w2_lo = wrong2(round.r2_lo, &rip1_lo, &rip1_hi);
+                let w2_hi = wrong2(round.r2_hi, &rip1_hi, &rip1_lo);
+                if likely(w2_lo.is_empty() && w2_hi.is_empty()) {
+                    return;
+                }
+                cold_path();
+                any_wrong2 = true;
+
+                // wrong position d reaches output slot d through the
+                // forward stream and slot l2 - 1 - d through the backward
+                for (chunk, fwd, bwd, hi_side) in [
+                    (round.lo, &w2_lo, &w2_hi, false),
+                    (round.hi, &w2_hi, &w2_lo, true),
+                ] {
+                    if chunk.0 >= chunk.1 {
+                        continue;
+                    }
+                    let mut affected = Vec::new();
+                    let mut mark = |d: usize| {
+                        let line = d / DPL;
+                        if line >= chunk.0 && line < chunk.1 {
+                            affected.push(line);
+                        }
+                    };
+                    for &(d, _) in fwd {
+                        mark(d);
+                    }
+                    for &(d, _) in bwd {
+                        if d < l2 {
+                            mark(l2 - 1 - d);
+                        }
+                    }
+                    if affected.is_empty() {
+                        continue;
+                    }
+                    affected.sort_unstable();
+                    affected.dedup();
+                    let (spec_base, cap, slot) = if hi_side {
+                        (chunk.0, chunk.1, (hi_j - num_threads) * hi_stride + ord)
+                    } else {
+                        (lo_b.0, lo_b.1, lo_j)
+                    };
+                    consumers.push(Consumer3 {
+                        fwd_w2: fwd.clone(),
+                        bwd_w2: bwd.clone(),
+                        spec_base,
+                        cap,
+                        slot,
+                        hi_side,
+                        affected,
+                    });
+                }
+            });
+        }
+
+        let repaired = Repair3 {
+            carried2: if likely(!any_rip1) {
+                shared.carried2.load(Relaxed)
+            } else {
+                s2_generates(src, l, l1)
+            },
+            carried3: if likely(!any_wrong2) {
+                shared.ever_carried.load(Relaxed)
+            } else {
+                s3_generates(src, l, l1, l2)
+            },
+            pal2_trusted: !any_rip1,
+        };
+
+        if likely(consumers.is_empty()) {
+            return repaired;
+        }
+        cold_path();
+
+        // Pass 2: recompute each affected line and its convergence tail.
+        for con in &consumers {
+            // What the pass consumed at position `p` through the given
+            // stream: the production's wrong value where the walk found
+            // one, ground truth elsewhere.
+            let consumed = |p: usize, w2: &[(usize, u8)]| -> u8 {
+                for &(wp, v) in w2 {
+                    if wp == p {
+                        return v;
+                    }
+                }
+                s2_digit(src, l, l1, p)
+            };
+            let consumed_sum = |s: usize| -> u8 {
+                let fwd = consumed(s, &con.fwd_w2);
+                if s < l2 {
+                    fwd + consumed(l2 - 1 - s, &con.bwd_w2)
+                } else {
+                    fwd
+                }
+            };
+
+            for &k0 in &con.affected {
+                // the chain carry the pass had entering line k0: walk the
+                // consumed sums down to the chunk's speculation base
+                let mut carry = false;
+                for d in (con.spec_base * DPL..k0 * DPL).rev() {
+                    let s = consumed_sum(d);
+                    if s != 9 {
+                        carry = s > 9;
+                        break;
+                    }
+                }
+
+                let mut k = k0;
+                loop {
+                    let mut lo_plane = [0u8; LV_LEN];
+                    let mut hi_plane = [0u8; LV_LEN];
+                    for p in 0..DPL {
+                        let s = s3_sum(src, l, l1, l2, k * DPL + p) + u8::from(carry);
+                        let digit = s % 10;
+                        carry = s >= 10;
+                        if p < LV_LEN {
+                            lo_plane[p] = digit;
+                        } else {
+                            hi_plane[p - LV_LEN] = digit;
+                        }
+                    }
+                    let line = pack_line(
+                        LimbVec::from_array(lo_plane),
+                        LimbVec::from_array(hi_plane),
+                    );
+                    if line == dst[k].0 {
+                        break; // chain and inputs agree with the pass again
+                    }
+                    dst[k] = Limb(line);
+                    k += 1;
+                    if k >= con.cap {
+                        // the correction changed the chunk's carry-out;
+                        // resolve_carries propagates it from here
+                        if con.hi_side {
+                            self.chunk_carries[con.slot].store(carry, Relaxed);
+                        } else {
+                            shared.block_carry[con.slot].0.store(carry, Relaxed);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        repaired
+    }
 }
 
 /// The result of a fused double step.
@@ -1447,6 +2230,28 @@ pub struct Step2Result {
     /// Whether the intermediate value (the first iteration's result, never
     /// materialized) was a palindrome.
     pub palindrome_mid: bool,
+}
+
+/// The result of a fused triple step.
+pub struct Step3Result {
+    /// Whether any digit carried in the third iteration.
+    pub carried: bool,
+    /// Whether the first iteration's unmaterialized result was a palindrome.
+    pub palindrome_mid1: bool,
+    /// Whether the second iteration's unmaterialized result was a
+    /// palindrome.
+    pub palindrome_mid2: bool,
+}
+
+/// Exact flags out of `repair_fused3`. A reverse-and-add result is a
+/// palindrome exactly when no digit of the step carried, so the exact
+/// carry flags decide the two intermediate palindrome checks; `pal2` is
+/// only a cross-check and holds pass values, so it is consulted only when
+/// no first-step misspeculation could have corrupted them.
+struct Repair3 {
+    carried2: bool,
+    carried3: bool,
+    pal2_trusted: bool,
 }
 
 impl Drop for PackedEngine {
@@ -1521,19 +2326,39 @@ pub fn iterate_packed<T: Allocator + Clone + Copy>(
         }
 
         let engine = unsafe { engine.as_mut().unwrap_unchecked() };
-        // The fused step runs iteration pairs (odd, even) so that report
-        // iterations -- even multiples of LOG_MASK -- always land on a
-        // pair's second half, where the value is materialized. Checkpoint
-        // resumes start at 2^18 k + 1, so the loop is odd-aligned from its
-        // first pass and the single-step path serves the tail and any even
-        // start. Below the streaming threshold both buffers fit in L3,
-        // reads are cache hits either way, and the fused pass's scratch
-        // round trip only costs, so the single-step pass runs instead.
-        if likely(
-            current.digits >= STREAM_MIN_LINES * DPL
-                && !i.is_multiple_of(2)
-                && i + 2 <= range.end,
-        ) {
+        // A fused step materializes only its last iteration, so a fused
+        // span must not step over a report iteration -- a multiple of
+        // LOG_MASK, where the value has to exist (and, at 2^18 multiples,
+        // be checkpointed). Triples run whenever the two skipped
+        // iterations are both plain; the double and single steps realign
+        // the cadence at report boundaries and serve the range tail.
+        // Below the streaming threshold both buffers fit in L3, reads are
+        // cache hits either way, and the fused passes' scratch round trips
+        // only cost, so the single-step pass runs instead.
+        let fused_ok =
+            current.digits >= STREAM_MIN_LINES * DPL && !i.is_multiple_of(LOG_MASK);
+        if likely(fused_ok && !(i + 1).is_multiple_of(LOG_MASK) && i + 3 <= range.end) {
+            #[cfg(not(feature = "no-verify"))]
+            let digits_in = current.digits;
+            let fused = engine.step3(&mut current);
+            #[cfg(not(feature = "no-verify"))]
+            if unlikely(fused.palindrome_mid1 || fused.palindrome_mid2) {
+                cold_path();
+                // the palindrome is an unmaterialized intermediate value;
+                // the input buffer is intact, so single steps rebuild it
+                current.cur = 1 - current.cur;
+                current.digits = digits_in;
+                engine.step(&mut current);
+                i += 1;
+                if !fused.palindrome_mid1 {
+                    engine.step(&mut current);
+                    i += 1;
+                }
+                break;
+            }
+            carried = fused.carried;
+            i += 2;
+        } else if fused_ok && i + 2 <= range.end {
             #[cfg(not(feature = "no-verify"))]
             let digits_in = current.digits;
             let fused = engine.step2(&mut current);
