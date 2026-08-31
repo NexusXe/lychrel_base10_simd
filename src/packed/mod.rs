@@ -310,6 +310,12 @@ struct SharedPacked {
     /// Triple pass only: `pal1` for the second step's digits, accumulated
     /// during the third step's add.
     pal2: AtomicBool,
+    /// Triple pass only: whether any worker's repair found a first-step
+    /// range whose speculative carry-in was wrong.
+    rip1_seen: AtomicBool,
+    /// Triple pass only: whether any worker's repair found a wrong
+    /// second-step digit.
+    wrong2_seen: AtomicBool,
     /// 2 * num_threads + 1 entries: block boundaries in lines.
     bounds: Box<[AtomicUsize]>,
     /// 2 * num_threads entries: each block's speculative carry-out. Only
@@ -469,6 +475,8 @@ impl SharedPacked {
             carried2: AtomicBool::new(false),
             pal1: AtomicBool::new(true),
             pal2: AtomicBool::new(true),
+            rip1_seen: AtomicBool::new(false),
+            wrong2_seen: AtomicBool::new(false),
             bounds: (0..=num_threads * 2).map(|_| AtomicUsize::new(0)).collect(),
             block_carry: (0..num_threads * 2)
                 .map(|_| Padded(AtomicBool::new(false)))
@@ -602,6 +610,7 @@ impl SharedPacked {
         } else {
             self.run_pair3_inner::<false>(t, scratch);
         }
+        self.repair_pair3(t);
     }
 
     fn run_pair2(&self, t: usize, scratch: &mut FusedScratch) {
@@ -1000,6 +1009,367 @@ impl SharedPacked {
         }
         if !all_eq2 {
             self.pal2.store(false, Relaxed);
+        }
+    }
+
+    /// Repairs the triple pass's misspeculation for participant `t`'s own
+    /// block pair, on the worker, between the pass and the end barrier:
+    /// every affected line, every convergence cap, and every carry slot a
+    /// walk can correct is pair-local, and ground truth reads only the
+    /// immutable source, so the repairs never touch another pair's lines.
+    ///
+    /// Level-1 range bases resolve exactly as in `repair_fused`; their
+    /// ripples, together with wrongly speculated level-2 range bases, make
+    /// second-step scratch digits wrong, which a dual chain walk (the
+    /// pass's values against ground truth) enumerates per range. Every
+    /// wrong second-step digit's consumers -- its own line through the
+    /// forward stream and its mirror's through the backward -- are then
+    /// recomputed from exact third-step ground truth, walking upward until
+    /// the recomputed line matches what the pass stored; a walk reaching
+    /// its chunk's speculation boundary corrects the recorded carry-out
+    /// instead. Misspeculation sightings are reported through `rip1_seen`
+    /// and `wrong2_seen` for the coordinator's exact carry flags.
+    fn repair_pair3(&self, t: usize) {
+        let src_ptr = self.a_src.load(Relaxed);
+        let dst = self.a_dst.load(Relaxed);
+        let lines = self.lines.load(Relaxed);
+        let l = self.digits.load(Relaxed);
+        let l1 = self.digits1.load(Relaxed);
+        let l2 = self.digits2.load(Relaxed);
+        let chunk_carry = self.chunk_carry.load(Relaxed);
+        let q1 = l1 / DPL;
+        let q1_lines = l1.div_ceil(DPL);
+        let q2 = l2 / DPL;
+        let q2_lines = l2.div_ceil(DPL);
+        let num_threads = self.num_threads;
+        let num_blocks = num_threads * 2;
+        let bound = |j: usize| self.bounds[j].load(Relaxed);
+
+        let src = unsafe { std::slice::from_raw_parts(src_ptr, lines) };
+
+        // level-1 ripples, exactly as in `repair_fused`
+        let ripple1 = |(base_line, end_line): (usize, usize)| -> Vec<(usize, u8)> {
+            let base = base_line * DPL;
+            if base_line == 0 || base_line >= end_line || base >= l1 {
+                return Vec::new();
+            }
+            if likely(!s1_carry_into(src, l, base)) {
+                return Vec::new();
+            }
+            cold_path();
+            let top = (end_line * DPL).min(l1);
+            let mut out = Vec::new();
+            let mut c = 0u8;
+            for p in base..top {
+                let s = s1_sum(src, l, p) + c;
+                let spec = s % 10;
+                c = u8::from(s >= 10);
+                out.push((p, spec));
+                if spec != 9 {
+                    break;
+                }
+            }
+            out
+        };
+
+        // the first-step digit the pass consumed at position `p` through a
+        // stream with the given ripple list
+        let p1c = |p: usize, rips: &[(usize, u8)]| -> u8 {
+            for &(rp, spec) in rips {
+                if rp == p {
+                    return spec;
+                }
+            }
+            s1_digit(src, l, p)
+        };
+
+        struct Consumer3 {
+            /// Wrong second-step digits, with the values the pass consumed,
+            /// of the production this chunk's forward stream reads.
+            fwd_w2: Vec<(usize, u8)>,
+            /// The same for the backward stream's production.
+            bwd_w2: Vec<(usize, u8)>,
+            spec_base: usize,
+            cap: usize,
+            slot: usize,
+            hi_side: bool,
+            affected: Vec<usize>,
+        }
+        let mut consumers: Vec<Consumer3> = Vec::new();
+        let mut any_rip1 = false;
+        let mut any_wrong2 = false;
+
+        let hi_stride = fused_hi_stride(q2_lines, num_blocks);
+        let lo_j = t;
+        let hi_j = num_blocks - 1 - t;
+        let lo_b = (bound(lo_j), bound(lo_j + 1));
+        let hi_b = (bound(hi_j), bound(hi_j + 1));
+        let mut hi_ord = 0usize;
+        for_each_round3(lo_b, hi_b, q2, q2_lines, q1, q1_lines, |round| {
+            let ord = hi_ord;
+            if round.hi.0 < round.hi.1 {
+                hi_ord += 1;
+            }
+            let rip1_lo = ripple1(round.r1_lo);
+            let rip1_hi = ripple1(round.r1_hi);
+            any_rip1 |= !(rip1_lo.is_empty() && rip1_hi.is_empty());
+
+            // wrong second-step digits of one production, by a dual chain
+            // walk (pass values against ground truth) from each seed: the
+            // range base if its true carry-in was one, and every position
+            // whose consumed first-step digit a ripple changed. Truncated
+            // at the range top: consumers beyond it read other
+            // productions.
+            let wrong2 = |r2: (usize, usize),
+                          own: &[(usize, u8)],
+                          other: &[(usize, u8)]|
+             -> Vec<(usize, u8)> {
+                if r2.0 >= r2.1 {
+                    return Vec::new();
+                }
+                let base = r2.0 * DPL;
+                let top = r2.1 * DPL;
+                let mut seeds: Vec<usize> = Vec::new();
+                if base > 0 && unlikely(s2_carry_into(src, l, l1, base)) {
+                    seeds.push(base);
+                }
+                for &(p, _) in own {
+                    if p >= base && p < top {
+                        seeds.push(p);
+                    }
+                }
+                for &(p, _) in other {
+                    let d = l1 - 1 - p;
+                    if d >= base && d < top {
+                        seeds.push(d);
+                    }
+                }
+                if likely(seeds.is_empty()) {
+                    return Vec::new();
+                }
+                cold_path();
+                seeds.sort_unstable();
+                seeds.dedup();
+                let psum = |d: usize| -> u8 {
+                    if d < l1 {
+                        p1c(d, own) + p1c(l1 - 1 - d, other)
+                    } else {
+                        0
+                    }
+                };
+                let mut out = Vec::new();
+                let mut done_until = base;
+                for &s0 in &seeds {
+                    if s0 < done_until {
+                        continue;
+                    }
+                    let mut pc = false;
+                    for e in (base..s0).rev() {
+                        let s = psum(e);
+                        if s != 9 {
+                            pc = s > 9;
+                            break;
+                        }
+                    }
+                    let mut tc = s2_carry_into(src, l, l1, s0);
+                    let mut d = s0;
+                    loop {
+                        let ps = psum(d) + u8::from(pc);
+                        let ts = s2_sum(src, l, l1, d) + u8::from(tc);
+                        let pd = ps % 10;
+                        let td = ts % 10;
+                        pc = ps >= 10;
+                        tc = ts >= 10;
+                        if pd != td {
+                            out.push((d, pd));
+                        }
+                        d += 1;
+                        if d >= top || (pd == td && pc == tc) {
+                            break;
+                        }
+                    }
+                    done_until = d;
+                }
+                out
+            };
+            let w2_lo = wrong2(round.r2_lo, &rip1_lo, &rip1_hi);
+            let w2_hi = wrong2(round.r2_hi, &rip1_hi, &rip1_lo);
+            if likely(w2_lo.is_empty() && w2_hi.is_empty()) {
+                return;
+            }
+            cold_path();
+            any_wrong2 = true;
+
+            // wrong position d reaches output slot d through the forward
+            // stream and slot l2 - 1 - d through the backward
+            for (chunk, fwd, bwd, hi_side) in [
+                (round.lo, &w2_lo, &w2_hi, false),
+                (round.hi, &w2_hi, &w2_lo, true),
+            ] {
+                if chunk.0 >= chunk.1 {
+                    continue;
+                }
+                let mut affected = Vec::new();
+                let mut mark = |d: usize| {
+                    let line = d / DPL;
+                    if line >= chunk.0 && line < chunk.1 {
+                        affected.push(line);
+                    }
+                };
+                for &(d, _) in fwd {
+                    mark(d);
+                }
+                for &(d, _) in bwd {
+                    if d < l2 {
+                        mark(l2 - 1 - d);
+                    }
+                }
+                if affected.is_empty() {
+                    continue;
+                }
+                affected.sort_unstable();
+                affected.dedup();
+                let (spec_base, cap, slot) = if hi_side {
+                    (chunk.0, chunk.1, (hi_j - num_threads) * hi_stride + ord)
+                } else {
+                    (lo_b.0, lo_b.1, lo_j)
+                };
+                consumers.push(Consumer3 {
+                    fwd_w2: fwd.clone(),
+                    bwd_w2: bwd.clone(),
+                    spec_base,
+                    cap,
+                    slot,
+                    hi_side,
+                    affected,
+                });
+            }
+        });
+
+        if unlikely(any_rip1) {
+            self.rip1_seen.store(true, Relaxed);
+        }
+        if unlikely(any_wrong2) {
+            self.wrong2_seen.store(true, Relaxed);
+        }
+        if likely(consumers.is_empty()) {
+            return;
+        }
+        cold_path();
+
+        // Pass 2: recompute each affected line and its convergence tail.
+        for con in &consumers {
+            // What the pass consumed at position `p` through the given
+            // stream: the production's wrong value where the walk found
+            // one, ground truth elsewhere.
+            let consumed = |p: usize, w2: &[(usize, u8)]| -> u8 {
+                for &(wp, v) in w2 {
+                    if wp == p {
+                        return v;
+                    }
+                }
+                s2_digit(src, l, l1, p)
+            };
+            let consumed_sum = |s: usize| -> u8 {
+                let fwd = consumed(s, &con.fwd_w2);
+                if s < l2 {
+                    fwd + consumed(l2 - 1 - s, &con.bwd_w2)
+                } else {
+                    fwd
+                }
+            };
+
+            // True digits are evaluated a line-sized window at a time with
+            // one carry-into walk and a chained carry, instead of a fresh
+            // backward walk per digit: a naive per-digit chain costs the
+            // repair over a millisecond per pass, which is most of the
+            // triple pass's non-DRAM budget.
+            //
+            // True first-step digits for positions base..base+DPL.
+            let s1_window = |base: isize| -> [u8; DPL] {
+                let mut out = [0u8; DPL];
+                let mut carry = base > 0 && s1_carry_into(src, l, base as usize);
+                for (p, o) in out.iter_mut().enumerate() {
+                    let pos = base + p as isize;
+                    if pos < 0 {
+                        continue;
+                    }
+                    let s = s1_sum(src, l, pos as usize) + u8::from(carry);
+                    *o = s % 10;
+                    carry = s >= 10;
+                }
+                out
+            };
+            // True second-step digits for positions base..base+DPL: the
+            // forward window and the ascending window of its mirrors.
+            let s2_window = |base: isize| -> [u8; DPL] {
+                let f = s1_window(base);
+                let b = s1_window(l1 as isize - base - DPL as isize);
+                let mut out = [0u8; DPL];
+                let mut carry = base > 0 && s2_carry_into(src, l, l1, base as usize);
+                for (p, o) in out.iter_mut().enumerate() {
+                    let pos = base + p as isize;
+                    if pos < 0 {
+                        continue;
+                    }
+                    let sum = if (pos as usize) < l1 { f[p] + b[DPL - 1 - p] } else { 0 };
+                    let s = sum + u8::from(carry);
+                    *o = s % 10;
+                    carry = s >= 10;
+                }
+                out
+            };
+
+            for &k0 in &con.affected {
+                // the chain carry the pass had entering line k0: walk the
+                // consumed sums down to the chunk's speculation base
+                let mut carry = false;
+                for d in (con.spec_base * DPL..k0 * DPL).rev() {
+                    let s = consumed_sum(d);
+                    if s != 9 {
+                        carry = s > 9;
+                        break;
+                    }
+                }
+
+                let mut k = k0;
+                loop {
+                    let f = s2_window((k * DPL) as isize);
+                    let b = s2_window(l2 as isize - ((k + 1) * DPL) as isize);
+                    let mut lo_plane = [0u8; LV_LEN];
+                    let mut hi_plane = [0u8; LV_LEN];
+                    for p in 0..DPL {
+                        let sum = if k * DPL + p < l2 { f[p] + b[DPL - 1 - p] } else { 0 };
+                        let s = sum + u8::from(carry);
+                        let digit = s % 10;
+                        carry = s >= 10;
+                        if p < LV_LEN {
+                            lo_plane[p] = digit;
+                        } else {
+                            hi_plane[p - LV_LEN] = digit;
+                        }
+                    }
+                    let line = pack_line(
+                        LimbVec::from_array(lo_plane),
+                        LimbVec::from_array(hi_plane),
+                    );
+                    if line == unsafe { (*dst.add(k)).0 } {
+                        break; // chain and inputs agree with the pass again
+                    }
+                    unsafe { *dst.add(k) = Limb(line) };
+                    k += 1;
+                    if k >= con.cap {
+                        // the correction changed the chunk's carry-out;
+                        // resolve_carries propagates it from here
+                        if con.hi_side {
+                            unsafe { (*chunk_carry.add(con.slot)).store(carry, Relaxed) };
+                        } else {
+                            self.block_carry[con.slot].0.store(carry, Relaxed);
+                        }
+                        break;
+                    }
+                }
+            }
         }
     }
 }
@@ -1827,8 +2197,6 @@ impl PackedEngine {
         let grew2 = prescan_grow2(&x.a[x.cur], l, l1);
         let l2 = l1 + grew2 as usize;
         let lines = l.div_ceil(DPL);
-        let q1 = l1 / DPL;
-        let q1_lines = l1.div_ceil(DPL);
         let q2 = l2 / DPL;
         let q2_lines = l2.div_ceil(DPL);
         // covers slot l2, where the third step's growth lands
@@ -1860,6 +2228,8 @@ impl PackedEngine {
         shared.carried2.store(false, Relaxed);
         shared.pal1.store(true, Relaxed);
         shared.pal2.store(true, Relaxed);
+        shared.rip1_seen.store(false, Relaxed);
+        shared.wrong2_seen.store(false, Relaxed);
         for k in 0..=num_blocks {
             shared.bounds[k].store(k * q2_lines / num_blocks, Relaxed);
         }
@@ -1868,7 +2238,7 @@ impl PackedEngine {
         shared.run_blocks(0, &mut self.scratch);
         shared.fused3.store(false, Relaxed);
 
-        let repaired = self.repair_fused3(x, l, l1, l2, q1, q1_lines, q2, q2_lines);
+        let repaired = self.exact_flags3(x, l, l1, l2);
 
         let carry = self.resolve_carries_fused(&mut x.a[next], l2 + 1, q2, q2_lines);
         if unlikely(carry) {
@@ -1894,242 +2264,26 @@ impl PackedEngine {
         }
     }
 
-    /// Repairs the triple pass's misspeculation at both scratch levels.
-    /// Level-1 range bases resolve exactly as in `repair_fused`; their
-    /// ripples, together with wrongly speculated level-2 range bases, make
-    /// second-step scratch digits wrong, which a dual chain walk (the
-    /// pass's values against ground truth) enumerates per range. Every
-    /// wrong second-step digit's consumers -- its own line through the
-    /// forward stream and its mirror's through the backward -- are then
-    /// recomputed from exact third-step ground truth, walking upward until
-    /// the recomputed line matches what the pass stored; a walk reaching
-    /// its chunk's speculation boundary corrects the recorded carry-out
-    /// instead. Also returns exact second- and third-step carry flags:
-    /// misspeculation taints the pass's accumulated flags, so they are
-    /// recomputed from true digit sums (any sum of ten generates), which
-    /// exits within a few digits unless the step really is carry-free.
-    fn repair_fused3<T: Allocator + Clone + Copy>(
+    /// Exact post-pass flags of the triple step. The repair itself runs
+    /// inside each worker (`SharedPacked::repair_pair3`); only the carry
+    /// flags need the whole picture. Misspeculation leaks wrong digits
+    /// into the pass's later sums, so the accumulated carry flags are not
+    /// trustworthy in either direction once a worker saw it -- and a
+    /// spuriously true flag would silence a palindrome check. The exact
+    /// flag is whether any true sum generates, which the scans decide
+    /// within a few digits unless the step really is carry-free.
+    fn exact_flags3<T: Allocator + Clone + Copy>(
         &self,
-        x: &mut PackedInt<T>,
+        x: &PackedInt<T>,
         l: usize,
         l1: usize,
         l2: usize,
-        q1: usize,
-        q1_lines: usize,
-        q2: usize,
-        q2_lines: usize,
     ) -> Repair3 {
         let shared = &*self.shared;
-        let num_threads = shared.num_threads;
-        let num_blocks = num_threads * 2;
-        let bound = |j: usize| shared.bounds[j].load(Relaxed);
-
-        let [b0, b1] = &mut x.a;
-        let (src, dst) = if x.cur == 0 { (&*b0, b1) } else { (&*b1, b0) };
-
-        // level-1 ripples, exactly as in `repair_fused`
-        let ripple1 = |(base_line, end_line): (usize, usize)| -> Vec<(usize, u8)> {
-            let base = base_line * DPL;
-            if base_line == 0 || base_line >= end_line || base >= l1 {
-                return Vec::new();
-            }
-            if likely(!s1_carry_into(src, l, base)) {
-                return Vec::new();
-            }
-            cold_path();
-            let top = (end_line * DPL).min(l1);
-            let mut out = Vec::new();
-            let mut c = 0u8;
-            for p in base..top {
-                let s = s1_sum(src, l, p) + c;
-                let spec = s % 10;
-                c = u8::from(s >= 10);
-                out.push((p, spec));
-                if spec != 9 {
-                    break;
-                }
-            }
-            out
-        };
-
-        // the first-step digit the pass consumed at position `p` through a
-        // stream with the given ripple list
-        let p1c = |p: usize, rips: &[(usize, u8)]| -> u8 {
-            for &(rp, spec) in rips {
-                if rp == p {
-                    return spec;
-                }
-            }
-            s1_digit(src, l, p)
-        };
-
-        struct Consumer3 {
-            /// Wrong second-step digits, with the values the pass consumed,
-            /// of the production this chunk's forward stream reads.
-            fwd_w2: Vec<(usize, u8)>,
-            /// The same for the backward stream's production.
-            bwd_w2: Vec<(usize, u8)>,
-            spec_base: usize,
-            cap: usize,
-            slot: usize,
-            hi_side: bool,
-            affected: Vec<usize>,
-        }
-        let mut consumers: Vec<Consumer3> = Vec::new();
-        let mut any_rip1 = false;
-        let mut any_wrong2 = false;
-
-        let hi_stride = fused_hi_stride(q2_lines, num_blocks);
-        for t in 0..num_threads {
-            let lo_j = t;
-            let hi_j = num_blocks - 1 - t;
-            let lo_b = (bound(lo_j), bound(lo_j + 1));
-            let hi_b = (bound(hi_j), bound(hi_j + 1));
-            let mut hi_ord = 0usize;
-            for_each_round3(lo_b, hi_b, q2, q2_lines, q1, q1_lines, |round| {
-                let ord = hi_ord;
-                if round.hi.0 < round.hi.1 {
-                    hi_ord += 1;
-                }
-                let rip1_lo = ripple1(round.r1_lo);
-                let rip1_hi = ripple1(round.r1_hi);
-                let rips_clean = rip1_lo.is_empty() && rip1_hi.is_empty();
-                any_rip1 |= !rips_clean;
-
-                // wrong second-step digits of one production, by a dual
-                // chain walk (pass values against ground truth) from each
-                // seed: the range base if its true carry-in was one, and
-                // every position whose consumed first-step digit a ripple
-                // changed. Truncated at the range top: consumers beyond it
-                // read other productions.
-                let wrong2 = |r2: (usize, usize),
-                              own: &[(usize, u8)],
-                              other: &[(usize, u8)]|
-                 -> Vec<(usize, u8)> {
-                    if r2.0 >= r2.1 {
-                        return Vec::new();
-                    }
-                    let base = r2.0 * DPL;
-                    let top = r2.1 * DPL;
-                    let mut seeds: Vec<usize> = Vec::new();
-                    if base > 0 && unlikely(s2_carry_into(src, l, l1, base)) {
-                        seeds.push(base);
-                    }
-                    for &(p, _) in own {
-                        if p >= base && p < top {
-                            seeds.push(p);
-                        }
-                    }
-                    for &(p, _) in other {
-                        let d = l1 - 1 - p;
-                        if d >= base && d < top {
-                            seeds.push(d);
-                        }
-                    }
-                    if likely(seeds.is_empty()) {
-                        return Vec::new();
-                    }
-                    cold_path();
-                    seeds.sort_unstable();
-                    seeds.dedup();
-                    let psum = |d: usize| -> u8 {
-                        if d < l1 {
-                            p1c(d, own) + p1c(l1 - 1 - d, other)
-                        } else {
-                            0
-                        }
-                    };
-                    let mut out = Vec::new();
-                    let mut done_until = base;
-                    for &s0 in &seeds {
-                        if s0 < done_until {
-                            continue;
-                        }
-                        let mut pc = false;
-                        for e in (base..s0).rev() {
-                            let s = psum(e);
-                            if s != 9 {
-                                pc = s > 9;
-                                break;
-                            }
-                        }
-                        let mut tc = s2_carry_into(src, l, l1, s0);
-                        let mut d = s0;
-                        loop {
-                            let ps = psum(d) + u8::from(pc);
-                            let ts = s2_sum(src, l, l1, d) + u8::from(tc);
-                            let pd = ps % 10;
-                            let td = ts % 10;
-                            pc = ps >= 10;
-                            tc = ts >= 10;
-                            if pd != td {
-                                out.push((d, pd));
-                            }
-                            d += 1;
-                            if d >= top || (pd == td && pc == tc) {
-                                break;
-                            }
-                        }
-                        done_until = d;
-                    }
-                    out
-                };
-                let w2_lo = wrong2(round.r2_lo, &rip1_lo, &rip1_hi);
-                let w2_hi = wrong2(round.r2_hi, &rip1_hi, &rip1_lo);
-                if likely(w2_lo.is_empty() && w2_hi.is_empty()) {
-                    return;
-                }
-                cold_path();
-                any_wrong2 = true;
-
-                // wrong position d reaches output slot d through the
-                // forward stream and slot l2 - 1 - d through the backward
-                for (chunk, fwd, bwd, hi_side) in [
-                    (round.lo, &w2_lo, &w2_hi, false),
-                    (round.hi, &w2_hi, &w2_lo, true),
-                ] {
-                    if chunk.0 >= chunk.1 {
-                        continue;
-                    }
-                    let mut affected = Vec::new();
-                    let mut mark = |d: usize| {
-                        let line = d / DPL;
-                        if line >= chunk.0 && line < chunk.1 {
-                            affected.push(line);
-                        }
-                    };
-                    for &(d, _) in fwd {
-                        mark(d);
-                    }
-                    for &(d, _) in bwd {
-                        if d < l2 {
-                            mark(l2 - 1 - d);
-                        }
-                    }
-                    if affected.is_empty() {
-                        continue;
-                    }
-                    affected.sort_unstable();
-                    affected.dedup();
-                    let (spec_base, cap, slot) = if hi_side {
-                        (chunk.0, chunk.1, (hi_j - num_threads) * hi_stride + ord)
-                    } else {
-                        (lo_b.0, lo_b.1, lo_j)
-                    };
-                    consumers.push(Consumer3 {
-                        fwd_w2: fwd.clone(),
-                        bwd_w2: bwd.clone(),
-                        spec_base,
-                        cap,
-                        slot,
-                        hi_side,
-                        affected,
-                    });
-                }
-            });
-        }
-
-        let repaired = Repair3 {
+        let src = &x.a[x.cur];
+        let any_rip1 = shared.rip1_seen.load(Relaxed);
+        let any_wrong2 = shared.wrong2_seen.load(Relaxed);
+        Repair3 {
             carried2: if likely(!any_rip1) {
                 shared.carried2.load(Relaxed)
             } else {
@@ -2141,85 +2295,7 @@ impl PackedEngine {
                 s3_generates(src, l, l1, l2)
             },
             pal2_trusted: !any_rip1,
-        };
-
-        if likely(consumers.is_empty()) {
-            return repaired;
         }
-        cold_path();
-
-        // Pass 2: recompute each affected line and its convergence tail.
-        for con in &consumers {
-            // What the pass consumed at position `p` through the given
-            // stream: the production's wrong value where the walk found
-            // one, ground truth elsewhere.
-            let consumed = |p: usize, w2: &[(usize, u8)]| -> u8 {
-                for &(wp, v) in w2 {
-                    if wp == p {
-                        return v;
-                    }
-                }
-                s2_digit(src, l, l1, p)
-            };
-            let consumed_sum = |s: usize| -> u8 {
-                let fwd = consumed(s, &con.fwd_w2);
-                if s < l2 {
-                    fwd + consumed(l2 - 1 - s, &con.bwd_w2)
-                } else {
-                    fwd
-                }
-            };
-
-            for &k0 in &con.affected {
-                // the chain carry the pass had entering line k0: walk the
-                // consumed sums down to the chunk's speculation base
-                let mut carry = false;
-                for d in (con.spec_base * DPL..k0 * DPL).rev() {
-                    let s = consumed_sum(d);
-                    if s != 9 {
-                        carry = s > 9;
-                        break;
-                    }
-                }
-
-                let mut k = k0;
-                loop {
-                    let mut lo_plane = [0u8; LV_LEN];
-                    let mut hi_plane = [0u8; LV_LEN];
-                    for p in 0..DPL {
-                        let s = s3_sum(src, l, l1, l2, k * DPL + p) + u8::from(carry);
-                        let digit = s % 10;
-                        carry = s >= 10;
-                        if p < LV_LEN {
-                            lo_plane[p] = digit;
-                        } else {
-                            hi_plane[p - LV_LEN] = digit;
-                        }
-                    }
-                    let line = pack_line(
-                        LimbVec::from_array(lo_plane),
-                        LimbVec::from_array(hi_plane),
-                    );
-                    if line == dst[k].0 {
-                        break; // chain and inputs agree with the pass again
-                    }
-                    dst[k] = Limb(line);
-                    k += 1;
-                    if k >= con.cap {
-                        // the correction changed the chunk's carry-out;
-                        // resolve_carries propagates it from here
-                        if con.hi_side {
-                            self.chunk_carries[con.slot].store(carry, Relaxed);
-                        } else {
-                            shared.block_carry[con.slot].0.store(carry, Relaxed);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        repaired
     }
 }
 
