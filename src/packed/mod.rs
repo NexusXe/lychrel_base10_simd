@@ -12,7 +12,7 @@
 use crate::impossible;
 use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, resolve_digits};
 use std::alloc::Allocator;
-use std::hint::likely;
+use std::hint::{cold_path, likely};
 use std::simd::prelude::*;
 
 /// Digits per packed line.
@@ -32,22 +32,34 @@ fn pack_line(lo: LimbVec, hi: LimbVec) -> LimbVec {
     lo | (hi << 4)
 }
 
+/// The result of adding and resolving one packed line: the packed output,
+/// its two unpacked digit halves (low digits first), the carry out of the
+/// top digit, and whether any digit carried.
+struct LineSum {
+    packed: LimbVec,
+    lo: LimbVec,
+    hi: LimbVec,
+    carry_out: bool,
+    carried: bool,
+}
+
 /// Adds two packed lines digit-wise and resolves every decimal carry inside
-/// the line, with `carry` into the line's lowest digit. Returns the packed
-/// result, the carry out of the top digit, and whether any digit carried.
+/// the line, with `carry` into the line's lowest digit.
 #[inline(always)]
-fn add_resolve_line(a: LimbVec, r: LimbVec, carry: bool) -> (LimbVec, bool, bool) {
+fn add_resolve_line(a: LimbVec, r: LimbVec, carry: bool) -> LineSum {
     let (a_lo, a_hi) = unpack_line(a);
     let (r_lo, r_hi) = unpack_line(r);
 
-    let (out_lo, carry_mid, carried_lo) = resolve_digits(a_lo + r_lo, carry);
-    let (out_hi, carry_out, carried_hi) = resolve_digits(a_hi + r_hi, carry_mid);
+    let (lo, carry_mid, carried_lo) = resolve_digits(a_lo + r_lo, carry);
+    let (hi, carry_out, carried_hi) = resolve_digits(a_hi + r_hi, carry_mid);
 
-    (
-        pack_line(out_lo, out_hi),
+    LineSum {
+        packed: pack_line(lo, hi),
+        lo,
+        hi,
         carry_out,
-        carried_lo || carried_hi,
-    )
+        carried: carried_lo || carried_hi,
+    }
 }
 
 /// The digit at slot `d` of a packed line slice.
@@ -214,11 +226,10 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         let mut carry = false;
         let mut any_carried = false;
         for k in 0..lines {
-            let (out, c_out, c_any) =
-                add_resolve_line(self.a[k].0, self.rev[self.cur][k].0, carry);
-            self.a[k] = Limb(out);
-            carry = c_out;
-            any_carried |= c_any;
+            let sum = add_resolve_line(self.a[k].0, self.rev[self.cur][k].0, carry);
+            self.a[k] = Limb(sum.packed);
+            carry = sum.carry_out;
+            any_carried |= sum.carried;
         }
         if carry {
             // only reachable when the top line was full to the brim
@@ -251,6 +262,350 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         self.cur = next;
 
         likely(any_carried)
+    }
+}
+
+use crate::parallel::{Padded, SpinBarrier, allowed_cpus, pin_participant};
+use std::cell::UnsafeCell;
+use std::hint::unlikely;
+use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
+
+/// Per-iteration state published by the coordinator before the start barrier
+/// and read by every worker after it. All accesses are Relaxed: the barriers
+/// provide the acquire/release edges.
+struct SharedPacked {
+    barrier: SpinBarrier,
+    num_threads: usize,
+    a_ptr: AtomicPtr<Limb>,
+    rev_src: AtomicPtr<Limb>,
+    rev_dst: AtomicPtr<Limb>,
+    /// Input lines: ceil(digits / DPL).
+    lines: AtomicUsize,
+    /// The output digit count, prescanned exactly before the pass; every
+    /// rev_dst write slot derives from it.
+    out_digits: AtomicUsize,
+    stop: AtomicBool,
+    ever_carried: AtomicBool,
+    /// 2 * num_threads + 1 entries: block boundaries in lines.
+    bounds: Box<[AtomicUsize]>,
+    /// 2 * num_threads entries: each block's speculative carry-out.
+    block_carry: Box<[Padded<AtomicBool>]>,
+    /// Reversed digit windows of each block's first and last chunk, for the
+    /// coordinator to assemble the rev_dst lines that straddle block seams.
+    stash_first: Box<[Padded<UnsafeCell<[u8; DPL]>>]>,
+    stash_last: Box<[Padded<UnsafeCell<[u8; DPL]>>]>,
+}
+
+// The raw pointers partition by block, the stashes are written only by the
+// block's owner, and the barrier orders every access.
+unsafe impl Send for SharedPacked {}
+unsafe impl Sync for SharedPacked {}
+
+/// Writes one rev_dst line assembled from the reversed windows of chunk `k`
+/// (`cur`) and chunk `k - 1` (`prev`). Chunk `k` covers rev slots
+/// [out_digits - DPL*(k+1), out_digits - DPL*k); the line completed by its
+/// arrival is the one holding the top of that window. Targets outside
+/// [0, lines_out) are the virtual lines above the top or below slot zero.
+#[inline(always)]
+unsafe fn emit_rev_line(
+    rev_dst: *mut Limb,
+    out_digits: usize,
+    lines_out: usize,
+    k: usize,
+    cur: &[u8; DPL],
+    prev: &[u8; DPL],
+) {
+    let w = out_digits as isize - (DPL * (k + 1)) as isize;
+    let target = w.div_euclid(DPL as isize) + 1;
+    if target < 0 || target >= lines_out as isize {
+        return;
+    }
+    let phi = out_digits % DPL;
+
+    let mut buf = [0u8; 2 * DPL];
+    buf[..DPL].copy_from_slice(cur);
+    buf[DPL..].copy_from_slice(prev);
+    let window = &buf[DPL - phi..2 * DPL - phi];
+    let lo = LimbVec::from_slice(&window[..LV_LEN]);
+    let hi = LimbVec::from_slice(&window[LV_LEN..]);
+    unsafe {
+        *rev_dst.add(target as usize) = Limb(pack_line(lo, hi));
+    }
+}
+
+impl SharedPacked {
+    fn new(num_threads: usize) -> Self {
+        Self {
+            barrier: SpinBarrier::new(num_threads),
+            num_threads,
+            a_ptr: AtomicPtr::new(std::ptr::null_mut()),
+            rev_src: AtomicPtr::new(std::ptr::null_mut()),
+            rev_dst: AtomicPtr::new(std::ptr::null_mut()),
+            lines: AtomicUsize::new(0),
+            out_digits: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            ever_carried: AtomicBool::new(false),
+            bounds: (0..=num_threads * 2).map(|_| AtomicUsize::new(0)).collect(),
+            block_carry: (0..num_threads * 2)
+                .map(|_| Padded(AtomicBool::new(false)))
+                .collect(),
+            stash_first: (0..num_threads * 2)
+                .map(|_| Padded(UnsafeCell::new([0; DPL])))
+                .collect(),
+            stash_last: (0..num_threads * 2)
+                .map(|_| Padded(UnsafeCell::new([0; DPL])))
+                .collect(),
+        }
+    }
+
+    /// The fused pass over block `j`: add the two copies line by line with a
+    /// speculative carry-in of zero, write the sums over `a` in place, and
+    /// scatter the reversed digits into rev_dst. A chunk's reversed window
+    /// straddles two rev_dst lines, so each chunk's arrival completes one
+    /// line from itself and its predecessor; the windows at the block's
+    /// edges are stashed for the coordinator's seam assembly.
+    fn run_block(&self, j: usize) {
+        let a = self.a_ptr.load(Relaxed);
+        let rsrc = self.rev_src.load(Relaxed);
+        let rdst = self.rev_dst.load(Relaxed);
+        let lines = self.lines.load(Relaxed);
+        let out_digits = self.out_digits.load(Relaxed);
+        let lines_out = out_digits.div_ceil(DPL);
+
+        let start = self.bounds[j].load(Relaxed);
+        let end = self.bounds[j + 1].load(Relaxed);
+        if start >= end {
+            self.block_carry[j].0.store(false, Relaxed);
+            return;
+        }
+
+        let mut carry = false;
+        let mut any_carried = false;
+        let mut prev = [0u8; DPL];
+        let mut cur = [0u8; DPL];
+
+        for k in start..end {
+            #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+            unsafe {
+                use std::arch::x86_64::{_MM_HINT_ET0, _MM_HINT_T0, _mm_prefetch};
+                _mm_prefetch::<_MM_HINT_ET0>(a.add(k + 16).cast());
+                _mm_prefetch::<_MM_HINT_T0>(rsrc.add(k + 16).cast());
+            }
+
+            let sum = unsafe {
+                let out = add_resolve_line((*a.add(k)).0, (*rsrc.add(k)).0, carry);
+                (*a.add(k)).0 = out.packed;
+                out
+            };
+            carry = sum.carry_out;
+            any_carried |= sum.carried;
+
+            // the window is the chunk's digits in descending order
+            cur[..LV_LEN].copy_from_slice(sum.hi.reverse().as_array());
+            cur[LV_LEN..].copy_from_slice(sum.lo.reverse().as_array());
+
+            if likely(k > start) {
+                unsafe { emit_rev_line(rdst, out_digits, lines_out, k, &cur, &prev) };
+            } else if k == 0 {
+                // the top rev_dst line: nothing above the window but padding
+                unsafe { emit_rev_line(rdst, out_digits, lines_out, k, &cur, &[0; DPL]) };
+            } else {
+                unsafe { *self.stash_first[j].0.get() = cur };
+            }
+            prev = cur;
+        }
+
+        if end == lines {
+            // the bottom rev_dst line: nothing below the last window
+            unsafe { emit_rev_line(rdst, out_digits, lines_out, end, &[0; DPL], &prev) };
+        } else {
+            unsafe { *self.stash_last[j].0.get() = prev };
+        }
+
+        self.block_carry[j].0.store(carry, Relaxed);
+        if likely(any_carried) {
+            self.ever_carried.store(true, Relaxed);
+        }
+    }
+
+    /// Both blocks of participant `t`, mirror-owned like the byte engine:
+    /// the rev_dst lines a block emits are the mirror of its own line range,
+    /// which is the participant's other block.
+    #[inline]
+    fn run_blocks(&self, t: usize) {
+        self.run_block(t);
+        self.run_block(self.num_threads * 2 - 1 - t);
+        self.barrier.wait();
+    }
+}
+
+/// Adds one to digit `d0` and propagates the decimal carry upward through
+/// `a`, stopping before `end_digit`. Returns the slot one past the last
+/// changed digit, and whether the carry escaped the range, which requires
+/// every digit in it to be nine.
+fn increment_digits(a: &mut [Limb], d0: usize, end_digit: usize) -> (usize, bool) {
+    let mut d = d0;
+    while d < end_digit {
+        let digit = digit_at(a, d);
+        if digit == 9 {
+            set_digit(a, d, 0);
+            d += 1;
+        } else {
+            set_digit(a, d, digit + 1);
+            return (d + 1, false);
+        }
+    }
+    (d, true)
+}
+
+/// A persistent pool of worker threads executing the packed fused
+/// reverse-and-add in lockstep with the calling thread, which is
+/// participant 0. `step` is a drop-in equivalent of `PackedInt::step`.
+pub struct PackedEngine {
+    shared: Arc<SharedPacked>,
+    handles: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl PackedEngine {
+    #[must_use]
+    pub fn new(num_threads: usize) -> Self {
+        assert!(num_threads >= 1);
+        let shared = Arc::new(SharedPacked::new(num_threads));
+        let cpus = allowed_cpus();
+
+        pin_participant(0, cpus);
+
+        let handles = (1..num_threads)
+            .map(|t| {
+                let shared = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    pin_participant(t, cpus);
+                    loop {
+                        shared.barrier.wait();
+                        if unlikely(shared.stop.load(Relaxed)) {
+                            break;
+                        }
+                        shared.run_blocks(t);
+                    }
+                })
+            })
+            .collect();
+
+        Self { shared, handles }
+    }
+
+    /// One packed reverse-and-add step. Returns whether any digit carried.
+    pub fn step<T: Allocator + Clone + Copy>(&self, x: &mut PackedInt<T>) -> bool {
+        let shared = &*self.shared;
+        let num_blocks = shared.num_threads * 2;
+
+        let digits = x.digits;
+        let grew = x.prescan_grow();
+        let out_digits = digits + grew as usize;
+        let lines = digits.div_ceil(DPL);
+        let lines_out = out_digits.div_ceil(DPL);
+
+        // Growth past the top line is decided by the prescan, so the line
+        // can be appended before the pass; its single digit is set after
+        // the carry scan confirms it.
+        if lines_out > x.a.len() {
+            x.a.push(Limb::new());
+        }
+        let next = 1 - x.cur;
+        x.rev[next].resize(lines_out, Limb::new());
+
+        shared.a_ptr.store(x.a.as_mut_ptr(), Relaxed);
+        shared
+            .rev_src
+            .store(x.rev[x.cur].as_ptr().cast_mut(), Relaxed);
+        shared.rev_dst.store(x.rev[next].as_mut_ptr(), Relaxed);
+        shared.lines.store(lines, Relaxed);
+        shared.out_digits.store(out_digits, Relaxed);
+        shared.ever_carried.store(false, Relaxed);
+        for k in 0..=num_blocks {
+            shared.bounds[k].store(k * lines / num_blocks, Relaxed);
+        }
+
+        shared.barrier.wait();
+        shared.run_blocks(0);
+
+        // Seam lines: rev_dst lines straddling a block boundary are built
+        // from the last window below the seam and the first window above it.
+        let mut below: Option<(&[u8; DPL], usize)> = None;
+        for j in 0..num_blocks {
+            let start = shared.bounds[j].load(Relaxed);
+            let end = shared.bounds[j + 1].load(Relaxed);
+            if start >= end {
+                continue;
+            }
+            if let Some((prev, k)) = below
+                && start == k
+                && start != 0
+            {
+                let cur = unsafe { &*shared.stash_first[j].0.get() };
+                unsafe {
+                    emit_rev_line(
+                        x.rev[next].as_mut_ptr(),
+                        out_digits,
+                        lines_out,
+                        start,
+                        cur,
+                        prev,
+                    );
+                }
+            }
+            below = Some((unsafe { &*shared.stash_last[j].0.get() }, end));
+        }
+
+        // Serial carry resolution across blocks: a block whose true carry-in
+        // turned out to be one gets a decimal increment at its base. Any
+        // digit the increment changes is mirrored into rev_dst.
+        let mut carry = false;
+        for j in 0..num_blocks {
+            let start = shared.bounds[j].load(Relaxed);
+            let end = shared.bounds[j + 1].load(Relaxed);
+            if start >= end {
+                continue; // an empty block passes the carry through
+            }
+            let mut carry_out = shared.block_carry[j].0.load(Relaxed);
+            if unlikely(carry) {
+                cold_path();
+                let d0 = start * DPL;
+                let (changed_until, escaped) =
+                    increment_digits(&mut x.a, d0, (end * DPL).min(out_digits));
+                for d in d0..changed_until {
+                    set_digit(&mut x.rev[next], out_digits - 1 - d, digit_at(&x.a, d));
+                }
+                carry_out |= escaped;
+            }
+            carry = carry_out;
+        }
+
+        if unlikely(carry) {
+            // only reachable when the input's top line was full to the brim
+            cold_path();
+            debug_assert!(grew && digits % DPL == 0);
+            set_digit(&mut x.a, out_digits - 1, 1);
+            set_digit(&mut x.rev[next], 0, 1);
+        }
+
+        x.digits = out_digits;
+        x.cur = next;
+
+        debug_assert!(digit_at(&x.a, out_digits - 1) != 0, "prescan missed growth");
+        shared.ever_carried.load(Relaxed)
+    }
+}
+
+impl Drop for PackedEngine {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Relaxed);
+        self.shared.barrier.wait();
+        for handle in self.handles.drain(..) {
+            handle.join().expect("packed engine worker died");
+        }
     }
 }
 

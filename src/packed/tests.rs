@@ -1,4 +1,4 @@
-use super::{PackedInt, digit_at};
+use super::{PackedEngine, PackedInt, digit_at};
 use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec};
 use rand::prelude::*;
 use rand::rngs::SmallRng;
@@ -102,6 +102,100 @@ fn test_packed_196_trajectory() {
         packed.step();
         assert!(
             packed.to_integer(Global) == serial,
+            "value diverged at step {step}"
+        );
+    }
+}
+
+/// The engine must agree with the serial packed step (itself pinned to the
+/// serial kernel above) step for step, across thread counts and sizes that
+/// produce empty blocks, single-line blocks, seam lines, and growth.
+#[test]
+fn test_packed_engine_matches_serial() {
+    let mut rng = SmallRng::seed_from_u64(0x196);
+
+    for num_threads in [1, 2, 3, 8] {
+        let engine = PackedEngine::new(num_threads);
+        for num_limbs in [1usize, 2, 3, 4, 5, 7, 16, 33, 64, 100] {
+            let start = random_integer(num_limbs, &mut rng);
+            let mut serial = PackedInt::from_integer(&start, Global);
+            let mut threaded = PackedInt::from_integer(&start, Global);
+
+            for step in 0..50 {
+                let carried_serial = serial.step();
+                let carried_threaded = engine.step(&mut threaded);
+                assert_eq!(
+                    carried_serial, carried_threaded,
+                    "carry flag diverged: {num_threads} threads, {num_limbs} limbs, step {step}"
+                );
+                assert_eq!(serial.digits, threaded.digits);
+                assert!(
+                    threaded.to_integer(Global) == serial.to_integer(Global),
+                    "value diverged: {num_threads} threads, {num_limbs} limbs, step {step}"
+                );
+                let digits = threaded.digits;
+                for d in 0..digits {
+                    assert_eq!(
+                        digit_at(threaded.rev_cur(), d),
+                        digit_at(&threaded.a, digits - 1 - d),
+                        "engine rev mirror broken: {num_threads} threads, {num_limbs} limbs, step {step}, slot {d}"
+                    );
+                }
+                for d in digits..threaded.rev_cur().len() * super::DPL {
+                    assert_eq!(
+                        digit_at(threaded.rev_cur(), d),
+                        0,
+                        "dirty engine rev padding: {num_threads} threads, {num_limbs} limbs, step {step}, slot {d}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// All-nines inputs exercise the cross-block increment fixup and its
+/// mirrored patching of the fresh rev buffer.
+#[test]
+fn test_packed_engine_all_nines() {
+    for num_threads in [2, 5] {
+        let engine = PackedEngine::new(num_threads);
+        for num_limbs in [1usize, 3, 8, 21] {
+            let limbs = vec![Limb(LimbVec::splat(9)); num_limbs];
+            let mut serial = PackedInt::from_integer(&Integer(limbs.clone()), Global);
+            let mut threaded = PackedInt::from_integer(&Integer(limbs), Global);
+
+            for step in 0..4 {
+                let carried_serial = serial.step();
+                let carried_threaded = engine.step(&mut threaded);
+                assert_eq!(carried_serial, carried_threaded);
+                assert!(
+                    threaded.to_integer(Global) == serial.to_integer(Global),
+                    "value diverged: {num_threads} threads, {num_limbs} limbs, step {step}"
+                );
+                let digits = threaded.digits;
+                for d in 0..digits {
+                    assert_eq!(
+                        digit_at(threaded.rev_cur(), d),
+                        digit_at(&threaded.a, digits - 1 - d),
+                        "engine rev mirror broken after fixup: step {step}, slot {d}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The engine trajectory from 196 must match the serial kernel's.
+#[test]
+fn test_packed_engine_196_trajectory() {
+    let engine = PackedEngine::new(4);
+    let mut serial = crate::integer!("196");
+    let mut threaded = PackedInt::from_integer(&serial, Global);
+    for step in 0..1000 {
+        serial.fused_reverse_add_asm_interleave();
+        engine.step(&mut threaded);
+        assert!(
+            threaded.to_integer(Global) == serial,
             "value diverged at step {step}"
         );
     }

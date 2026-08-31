@@ -40,14 +40,14 @@ const ONE_CCD_THREADS: usize = 8;
 
 /// Centralized sense-reversing barrier. All waiters spin; the engine never
 /// parks a thread, since iterations are microseconds apart.
-struct SpinBarrier {
+pub(crate) struct SpinBarrier {
     participants: usize,
     count: AtomicUsize,
     generation: AtomicUsize,
 }
 
 impl SpinBarrier {
-    fn new(participants: usize) -> Self {
+    pub(crate) fn new(participants: usize) -> Self {
         Self {
             participants,
             count: AtomicUsize::new(0),
@@ -56,7 +56,7 @@ impl SpinBarrier {
     }
 
     #[inline]
-    fn wait(&self) {
+    pub(crate) fn wait(&self) {
         let generation = self.generation.load(Acquire);
         if self.count.fetch_add(1, AcqRel) == self.participants - 1 {
             self.count.store(0, Relaxed);
@@ -70,7 +70,7 @@ impl SpinBarrier {
 }
 
 #[repr(align(64))]
-struct Padded<T>(T);
+pub(crate) struct Padded<T>(pub(crate) T);
 
 /// Per-iteration state published by the coordinator before the start barrier
 /// and read by every worker after it. All accesses are Relaxed: the barriers
@@ -182,7 +182,7 @@ impl Shared {
 /// created from a coordinator already pinned to one CPU, and reading the
 /// affinity mask again there would collapse the whole pool onto that CPU.
 #[cfg(target_family = "unix")]
-fn allowed_cpus() -> &'static [usize] {
+pub(crate) fn allowed_cpus() -> &'static [usize] {
     static ALLOWED: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
     ALLOWED.get_or_init(|| unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -207,17 +207,17 @@ fn pin_to_cpu(cpu: usize) {
 }
 
 #[cfg(target_family = "unix")]
-fn pin_participant(t: usize, cpus: &[usize]) {
+pub(crate) fn pin_participant(t: usize, cpus: &[usize]) {
     if !cpus.is_empty() {
         pin_to_cpu(cpus[t % cpus.len()]);
     }
 }
 
 #[cfg(not(target_family = "unix"))]
-fn pin_participant(_t: usize, _cpus: &[usize]) {}
+pub(crate) fn pin_participant(_t: usize, _cpus: &[usize]) {}
 
 #[cfg(not(target_family = "unix"))]
-fn allowed_cpus() -> &'static [usize] {
+pub(crate) fn allowed_cpus() -> &'static [usize] {
     &[]
 }
 
