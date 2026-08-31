@@ -313,6 +313,7 @@ impl Limb {
                 let left_limb_ptr = limb_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
+
                 // shift these as qwords since byte-wise shifts use gfni
                 let lhs_output =
                     *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
@@ -515,6 +516,14 @@ pub(crate) unsafe fn add_block(
         unsafe {
             let limb = &mut *limbs_ptr.add(i).cast::<Limb>();
             let limb_ptr = &raw const limb.0;
+
+            // Write-intent prefetch 16 limbs (1KiB) ahead; the line is read,
+            // resolved and stored back below. Past-the-block addresses are
+            // harmless. Measured on the 822M checkpoint: 2.6% faster than no
+            // prefetch; a distance of 32 or prefetching in the zipper too
+            // measured slower.
+            #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+            _mm_prefetch::<_MM_HINT_ET0>(limbs_ptr.add(i + 16).cast());
 
             let reversed_limb: LimbVec = if likely(i + 1 < end) {
                 read_unaligned(limb_ptr.byte_add(skip_len))
