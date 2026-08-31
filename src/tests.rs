@@ -5,13 +5,13 @@ fn test_iterate() {
     let starting_integer = integer!("196");
 
     let limit = 2;
-    let result = crate::iterate::iterate(1..limit, starting_integer.clone(), None);
+    let result = crate::reference::iterate(1..limit, starting_integer.clone(), None);
     assert_eq!(result.last_iteration, limit);
     assert_eq!(result.end_integer, integer!("887"));
 
     let limit = 501;
 
-    let result = crate::iterate::iterate(1..limit, starting_integer, None);
+    let result = crate::reference::iterate(1..limit, starting_integer, None);
     assert_eq!(result.last_iteration, limit);
     assert_eq!(
         result.end_integer,
@@ -26,7 +26,7 @@ fn test_iterate() {
 
     let starting_integer = integer!("197");
 
-    let result = crate::iterate::iterate(1..limit, starting_integer, None);
+    let result = crate::reference::iterate(1..limit, starting_integer, None);
 
     assert_eq!(result.last_iteration, 8);
     assert_eq!(result.end_integer, integer!("881188"));
@@ -54,7 +54,7 @@ fn test_iterate_huge() {
 
     let expected_integer = Integer(expected_huge_vec);
 
-    let result = crate::iterate::iterate(1..limit, starting_integer, None);
+    let result = crate::reference::iterate(1..limit, starting_integer, None);
 
     assert_eq!(result.last_iteration, limit);
     assert_eq!(result.end_integer, expected_integer);

@@ -1,6 +1,5 @@
 use crate::impossible;
 use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, add_block, increment_block};
-use crate::iterate::{IterationResult, LOG_MASK, StatusReport};
 use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, spin_loop, unlikely};
 use std::sync::Arc;
@@ -11,8 +10,23 @@ use std::sync::atomic::{
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-/// Limb count below which one iteration is too short to amortize the engine's
-/// barriers, so `iterate_parallel` stays on the single-threaded kernel.
+pub struct IterationResult<T: Allocator + Clone + Copy> {
+    pub(crate) last_iteration: usize,
+    pub(crate) start_time: Instant,
+    pub(crate) end_integer: Integer<T>,
+}
+
+pub struct StatusReport {
+    pub(crate) iteration: usize,
+    pub(crate) current_value: Option<Integer<Global>>,
+}
+
+pub const LOG_FREQUENCY_EXP: usize = 14;
+
+pub const LOG_MASK: usize = 2usize.pow(LOG_FREQUENCY_EXP as u32);
+
+/// Limb count below which one iteration is too short to amortize spreading
+/// across cores, so `iterate_parallel` runs the engine with one participant.
 pub const PAR_THRESHOLD_LIMBS: usize = 4096;
 
 /// Limb count below which more than one CCD's worth of threads loses to its
@@ -315,9 +329,8 @@ impl Drop for ParallelEngine {
     }
 }
 
-/// Drop-in replacement for `iterate::iterate` that switches from the serial
-/// kernel to a `ParallelEngine` once the integer is large enough for the
-/// per-iteration barriers to amortize.
+/// The iteration loop. The engine runs with one participant while the
+/// integer is small, and widens at the two size thresholds above.
 #[inline]
 pub fn iterate_parallel<T: Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,
@@ -333,7 +346,7 @@ pub fn iterate_parallel<T: Allocator + Clone + Copy>(
     let mut carried: bool = true; // ignore palindrome check on the first loop
     let mut i: usize = range.start;
     let mut engine: Option<ParallelEngine> = None;
-    let mut engine_threads: usize = 1;
+    let mut engine_threads: usize = 0;
 
     let start_time = Instant::now();
 
@@ -359,22 +372,18 @@ pub fn iterate_parallel<T: Allocator + Clone + Copy>(
             1
         };
 
-        if unlikely(target_threads > 1 && engine_threads != target_threads) {
+        if unlikely(engine_threads != target_threads) {
             cold_path();
             engine = None; // join the smaller pool before its cores are re-pinned
             engine = Some(ParallelEngine::new(target_threads));
             engine_threads = target_threads;
             eprintln!(
-                "Parallel engine: {target_threads} threads at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
+                "Parallel engine: {target_threads} thread(s) at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
                 start_time.elapsed().as_secs_f64()
             );
         }
 
-        carried = if likely(target_threads > 1) {
-            unsafe { engine.as_ref().unwrap_unchecked() }.step(&mut current_iteration)
-        } else {
-            current_iteration.fused_reverse_add_asm_interleave()
-        };
+        carried = unsafe { engine.as_ref().unwrap_unchecked() }.step(&mut current_iteration);
 
         if unlikely(i.is_multiple_of(LOG_MASK)) {
             let report = StatusReport {

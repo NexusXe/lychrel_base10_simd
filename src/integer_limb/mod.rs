@@ -32,7 +32,7 @@ type LimbVecMask =
     <std::simd::Simd<LimbVecScalar, { LV_LEN }> as std::simd::cmp::SimdPartialEq>::Mask;
 
 pub const WV_LEN: usize = LV_LEN / (WideVecScalar::BITS as usize / LimbVecScalar::BITS as usize);
-type WideVec = Simd<WideVecScalar, WV_LEN>;
+pub(crate) type WideVec = Simd<WideVecScalar, WV_LEN>;
 pub const WV_BYTES: usize = WV_LEN * (WideVecScalar::BITS / 8) as usize;
 
 const fn assert_good_vec_sizes() {
@@ -335,8 +335,9 @@ impl Limb {
         }
     }
 
+    #[cfg(any(test, feature = "reference-impl"))]
     #[inline(always)]
-    fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
+    pub(crate) fn zip_halves(limbs_ptr: *mut LimbVec, total_limbs: usize) {
         let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
         unsafe { Self::zipper(limbs_ptr, rev_ptr, 0, total_limbs.div_ceil(2)) };
     }
@@ -633,8 +634,9 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         debug_assert_eq!(Limb::new(), discarded.unwrap());
     }
 
+    #[cfg(any(test, feature = "reference-impl"))]
     #[inline]
-    fn num_limbs(&self) -> usize {
+    pub(crate) fn num_limbs(&self) -> usize {
         if self.0.is_empty() {
             impossible!("Tried to get limb count for an empty integer");
         }
@@ -645,142 +647,6 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
 
         num_limbs
-    }
-
-    #[inline(always)]
-    pub fn fused_reverse_add_asm_interleave(&mut self) -> bool {
-        use std::ptr::read_unaligned;
-
-        if self.0.is_empty() {
-            impossible!("Tried to reverse and add empty integer");
-        }
-
-        let total_limbs = self.num_limbs();
-        if total_limbs > 2usize.pow(26) {
-            impossible!("Tried to iterate over an integer with more than 2^26 limbs");
-        }
-
-        self.0.push(Limb::new()); // padding
-
-        let skip_len = LV_LEN as u8 - unsafe { self.0.get_unchecked(total_limbs - 1).len() };
-
-        if skip_len >= LV_LEN as u8 {
-            impossible!("skip_len out of bounds");
-        }
-
-        let limbs_ptr = self.0.as_mut_ptr().cast::<LimbVec>();
-        let rev_ptr = unsafe { limbs_ptr.add(total_limbs - 1) };
-        if !std::ptr::eq(rev_ptr, unsafe {
-            &raw const self.0.get_unchecked_mut(total_limbs.unchecked_sub(1)).0
-        }) {
-            impossible!("Incoherent rev_ptr");
-        }
-
-        Limb::zip_halves(limbs_ptr, total_limbs);
-
-        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
-        unsafe {
-            std::arch::asm!(r#"
-            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
-            2:
-            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8]      # 4 bytes, 1 uop
-            add {i:l}, 8                                        # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
-            jns 2b                                              # 2 bytes; shares uop with add instruction
-            "#,
-            limbs_ptr = in(reg) limbs_ptr,
-            i = inout(reg) 0 => _,
-            options(nostack, nomem));
-            // in addition to the first limbs, the last ones are also accessed first
-            // however, they are likely still in cache
-        }
-
-        let mut overflowed = false;
-        let mut ever_carried = false;
-
-        // addition process
-        // the reversed data is offset, but is guaranteed to be fully contained between the current and next cache line
-        // conveniently, the next cache line is going to be needed soon anyway so this is fine
-        for (_, limb) in self
-            .0
-            .iter_mut()
-            .enumerate()
-            .take_while(|(idx, _)| idx < &total_limbs)
-        {
-            unsafe {
-                let limb_ptr = &raw const limb.0;
-
-                let reversed_limb: LimbVec =
-                    read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
-
-                overflowed = add_resolve_limb(limb, reversed_limb, overflowed, &mut ever_carried);
-            }
-        }
-
-        let pad_ptr = unsafe { rev_ptr.add(1).cast::<WideVec>() };
-
-        if unsafe { *pad_ptr != std::mem::zeroed() } {
-            impossible!("Dirty padding data!");
-        }
-
-        if likely(overflowed) {
-            //#[cfg(all(target_feature = "avx512f", feature = "stream"))]
-            unsafe {
-                // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
-                debug_assert_eq!(
-                    {
-                        let mut vec = LimbVec::default();
-                        vec.as_mut_array()[0] = 1;
-                        vec
-                    },
-                    std::mem::transmute::<WideVec, LimbVec>({
-                        let mut wide = WideVec::default();
-                        wide.as_mut_array()[0] = 1;
-                        wide
-                    })
-                );
-                const ONE_WIDE: WideVec = {
-                    let mut wide: WideVec = unsafe { std::mem::zeroed() };
-                    wide.as_mut_array()[0] = 1;
-                    wide
-                };
-                *pad_ptr = ONE_WIDE;
-            }
-
-            // #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
-            // unsafe {
-            //     *((rev_ptr as usize).unchecked_add(LV_LEN) as *mut u8) = 1;
-            // }
-        } else {
-            self.0.pop();
-        }
-
-        #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-        #[allow(clippy::pointers_in_nomem_asm_block)] // ptr is being used for prefetch
-        unsafe {
-            // prefetch the first 16 limbs since, for integers larger than L3$, they've probably been evicted by now
-            // prefetching in asm because I don't want this loop unrolled
-            // while it probably doesn't matter, less pollution in the L1i$ and the L1$ overall is good
-            // asm version uses 12 bytes overall, whereas unrolled version was 7 * 16 = 112 bytes
-            std::arch::asm!(r#"
-            # implicit xor {i:e}, {i:e}; 2 bytes, 1 uop
-            2:
-            prefetchw byte ptr [{limbs_ptr:r} + {i:r} * 8]      # 4 bytes, 1 uop
-            neg {i:r}                                           # 3 bytes, 1 uop
-            prefetchw byte ptr [{rev_ptr:r} + 0 + {i:r} * 8]    # 4 bytes, 1 uop
-            neg {i:r}                                           # 3 bytes, 1 uop
-            add {i:l}, 8                                        # 3 or 4 bytes; fuses with conditional jump for 1 uop for both
-            jns 2b                                              # 2 bytes; shares uop with add instruction
-            "#,
-            limbs_ptr = in(reg) limbs_ptr,
-            rev_ptr = in(reg) rev_ptr,
-            i = inout(reg) 0 => _,
-            options(nostack, nomem));
-            // in addition to the first limbs, the last ones are also accessed first
-            // however, they are likely still in cache
-        }
-
-        likely(ever_carried)
     }
 
     #[inline]

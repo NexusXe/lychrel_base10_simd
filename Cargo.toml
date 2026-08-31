@@ -17,6 +17,10 @@ no-prefetch = []
 # Use non-temporal (streaming) stores for limb writeback. Off by default:
 # bypassing cache makes short benchmark runs much less consistent
 stream = []
+# Compile the single-threaded reference implementation (src/reference.rs) into
+# the binary, where `--threads 1` selects it. Always present in test builds:
+# the parity tests validate the parallel engine against it.
+reference-impl = []
 
 [dependencies]
 zerocopy = { version = "0.8", features = ["derive", "simd-nightly"] }

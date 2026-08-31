@@ -47,8 +47,9 @@ use std::time::Instant;
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
 
-mod iterate;
 mod parallel;
+#[cfg(any(test, feature = "reference-impl"))]
+mod reference;
 
 const INITIAL_SEED: u128 = 196;
 const LIMIT_SHORT: usize = 603_567;
@@ -540,21 +541,26 @@ SIMD Lychrel Number Search
 
             println!("limit: {stop_at:}");
 
-            let (tx, rx) = mpsc::channel::<iterate::StatusReport>();
+            let (tx, rx) = mpsc::channel::<parallel::StatusReport>();
 
             let iteration_handle = {
                 println!("{}", "-".repeat(32));
                 thread::spawn(move || {
-                    if num_threads > 1 {
-                        parallel::iterate_parallel(
+                    #[cfg(feature = "reference-impl")]
+                    if num_threads == 1 {
+                        return reference::iterate(
                             starting_iteration..stop_at,
                             initial_value,
                             Some(&tx),
-                            num_threads,
-                        )
-                    } else {
-                        iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
+                        );
                     }
+
+                    parallel::iterate_parallel(
+                        starting_iteration..stop_at,
+                        initial_value,
+                        Some(&tx),
+                        num_threads,
+                    )
                 })
             };
 
@@ -568,10 +574,10 @@ SIMD Lychrel Number Search
                 let current_value = status_report.current_value;
 
                 let rate: f64 =
-                    unsafe { fdiv_fast(iterate::LOG_MASK as f64, elapsed_time.as_secs_f64()) };
+                    unsafe { fdiv_fast(parallel::LOG_MASK as f64, elapsed_time.as_secs_f64()) };
 
                 if !quiet {
-                    let log_idx = i.div_floor(iterate::LOG_MASK) % 16;
+                    let log_idx = i.div_floor(parallel::LOG_MASK) % 16;
                     println!(
                         "{}:{} {i}; {rate:.2} iter/sec",
                         if log_idx == 0 { 16 } else { log_idx },
