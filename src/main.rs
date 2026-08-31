@@ -47,6 +47,7 @@ use std::time::Instant;
 #[cfg(not(feature = "no-verify"))]
 use std::io::Read;
 
+mod packed;
 mod parallel;
 #[cfg(any(test, feature = "reference-impl"))]
 mod reference;

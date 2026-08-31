@@ -396,6 +396,57 @@ impl std::fmt::Debug for Limb {
     }
 }
 
+/// Resolves every decimal carry in a vector of digit sums (each 0..=18, with
+/// `forward_carry` into the lowest digit), returning the resolved digits, the
+/// carry out of the top digit, and whether any digit carried.
+#[inline(always)]
+pub(crate) fn resolve_digits(sums: LimbVec, forward_carry: bool) -> (LimbVec, bool, bool) {
+    const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
+    const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
+    const TOP_LANE: u64 = 1 << (LV_LEN - 1);
+
+    // Exact carry propagation through the hardware adder.
+    //
+    // With generate g = (digit > 9) and propagate p = (digit == 9),
+    // the carry recurrence c_i = g_i | (p_i & c_(i-1)) is the carry
+    // chain of the binary sum g + (g | p): g & (g | p) == g
+    // reproduces generate, and g ^ (g | p) == p reproduces
+    // propagate, since a digit cannot be both greater than and equal
+    // to 9. Adding those two words with the previous limb's carry as
+    // carry-in therefore resolves every carry in the limb at once,
+    // however long the run of nines, and the adder's carry-out is
+    // the carry out of the limb. The whole limb-to-limb dependency
+    // is then one `adc`.
+    let generate = sums.simd_gt(CARRY_NINE_CMP).to_bitmask();
+    let propagate = sums.simd_eq(CARRY_NINE_CMP).to_bitmask();
+    let gp = generate | propagate;
+    let (sum, adder_carry) = generate.carrying_add(gp, forward_carry);
+
+    // sum_i = g_i ^ gp_i ^ (carry into digit i), so undoing the two
+    // operands leaves the carry-in of every digit. A digit that
+    // receives a carry gains 1, and a digit that emits one loses 10;
+    // the emitting digits are the receiving ones shifted down a lane,
+    // with the carry out of the limb occupying the top lane.
+    let carry_in = sum ^ generate ^ gp;
+    let carry_out = if LV_LEN == u64::BITS as usize {
+        adder_carry
+    } else {
+        (generate | (propagate & carry_in)) & TOP_LANE != 0
+    };
+    let carry_out_mask = (carry_in >> 1) | (u64::from(carry_out) << (LV_LEN - 1));
+
+    let mut output = LimbVecMask::from_bitmask(carry_out_mask).select(sums - TEN_VEC_BYTES, sums);
+    output = LimbVecMask::from_bitmask(carry_in).select(output + LimbVec::splat(1), output);
+
+    for result in output.as_array() {
+        if *result > 9 {
+            impossible!("Got impossible carry propagation result");
+        }
+    }
+
+    (output, carry_out, carry_in != 0 || carry_out)
+}
+
 /// Adds `reversed_limb` into `limb` and resolves every decimal carry inside
 /// the limb, returning the carry out of the limb. `forward_carry` is the carry
 /// into the limb's lowest digit. Both operands must hold clean digits (0..=9).
@@ -425,52 +476,9 @@ pub(crate) unsafe fn add_resolve_limb(
             }
         }
 
-        const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
-        const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
-        const TOP_LANE: u64 = 1 << (LV_LEN - 1);
-
-        // Exact carry propagation through the hardware adder.
-        //
-        // With generate g = (digit > 9) and propagate p = (digit == 9),
-        // the carry recurrence c_i = g_i | (p_i & c_(i-1)) is the carry
-        // chain of the binary sum g + (g | p): g & (g | p) == g
-        // reproduces generate, and g ^ (g | p) == p reproduces
-        // propagate, since a digit cannot be both greater than and equal
-        // to 9. Adding those two words with the previous limb's carry as
-        // carry-in therefore resolves every carry in the limb at once,
-        // however long the run of nines, and the adder's carry-out is
-        // the carry out of the limb. The whole limb-to-limb dependency
-        // is then one `adc`.
-        let generate = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
-        let propagate = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
-        let gp = generate | propagate;
-        let (sum, adder_carry) = generate.carrying_add(gp, forward_carry);
-
-        // sum_i = g_i ^ gp_i ^ (carry into digit i), so undoing the two
-        // operands leaves the carry-in of every digit. A digit that
-        // receives a carry gains 1, and a digit that emits one loses 10;
-        // the emitting digits are the receiving ones shifted down a lane,
-        // with the carry out of the limb occupying the top lane.
-        let carry_in = sum ^ generate ^ gp;
-        let carry_out = if LV_LEN == u64::BITS as usize {
-            adder_carry
-        } else {
-            (generate | (propagate & carry_in)) & TOP_LANE != 0
-        };
-        let carry_out_mask = (carry_in >> 1) | (u64::from(carry_out) << (LV_LEN - 1));
-
-        if likely(carry_in != 0) || carry_out {
+        let (output, carry_out, carried) = resolve_digits(limb.0, forward_carry);
+        if likely(carried) {
             *ever_carried = true;
-        }
-
-        let mut output =
-            LimbVecMask::from_bitmask(carry_out_mask).select(limb.0 - TEN_VEC_BYTES, limb.0);
-        output = LimbVecMask::from_bitmask(carry_in).select(output + LimbVec::splat(1), output);
-
-        for result in output.as_array() {
-            if *result > 9 {
-                impossible!("Got impossible carry propagation result");
-            }
         }
 
         // The fallback below is the exact negation of this condition,
