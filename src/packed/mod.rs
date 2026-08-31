@@ -346,7 +346,12 @@ fn align_bytes(a: LimbVec, b: LimbVec, shift: usize) -> LimbVec {
             }
             LimbVec::from_array(lanes)
         };
-        let idx = IOTA + LimbVec::splat(shift as u8);
+        // black_box keeps the three emit branches distinguishable: LLVM
+        // otherwise proves them equivalent to one variable 128-byte extract
+        // from a four-vector concatenation, which it lowers through a stack
+        // buffer whose overlapping stores and reloads defeat store-to-load
+        // forwarding on every line.
+        let idx = IOTA + LimbVec::splat(std::hint::black_box(shift) as u8);
         unsafe {
             LimbVec::from(_mm512_permutex2var_epi8(
                 __m512i::from(a),
