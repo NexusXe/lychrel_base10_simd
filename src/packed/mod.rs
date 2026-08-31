@@ -853,137 +853,214 @@ impl SharedPacked {
         let mut hi_ord = 0usize;
 
         for_each_round3(lo_bounds, hi_bounds, q2, q2_lines, q1, q1_lines, |round| {
-            // phase A: first-step lines for both ranges, into scratch
-            for (range, scratch) in [
-                (round.r1_lo, &mut *scratch_lo),
-                (round.r1_hi, &mut *scratch_hi),
-            ] {
-                let (s, e) = range;
-                if s >= e {
-                    continue;
-                }
-                assert!(e - s <= SCRATCH_LINES, "fused scratch range overflow");
-                let mut upper = load_a(q0 - s as isize);
-                let mut carry = false;
-                for j in s..e {
-                    let m = q0 - 1 - j as isize;
+            // phase A: first-step lines for both ranges, into scratch.
+            // The two ranges carry independent speculated chains and are
+            // walked interleaved so two carry chains stay in flight.
+            let (s0, e0) = round.r1_lo;
+            let (s1, e1) = round.r1_hi;
+            let n0 = e0.saturating_sub(s0);
+            let n1 = e1.saturating_sub(s1);
+            assert!(
+                n0 <= SCRATCH_LINES && n1 <= SCRATCH_LINES,
+                "fused scratch range overflow"
+            );
+            let mut up0 = load_a(q0 - s0 as isize);
+            let mut up1 = load_a(q0 - s1 as isize);
+            let mut c0 = false;
+            let mut c1 = false;
+            let mut a_line = |j: usize,
+                              upper: &mut (LimbVec, LimbVec),
+                              carry: &mut bool,
+                              out: &mut Limb| {
+                let m = q0 - 1 - j as isize;
 
-                    #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-                    unsafe {
-                        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(j + 16).cast());
-                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
-                    }
-
-                    let lower = load_a(m);
-                    let (r_lo, r_hi) = rev_operand(phi0, idx0, lower, upper);
-                    let fwd = if j < lines {
-                        unsafe { (*src.add(j)).0 }
-                    } else {
-                        LimbVec::splat(0)
-                    };
-                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
-                    scratch[j - s] = Limb(sum.packed);
-                    carry = sum.carry_out;
-                    carried1 |= sum.carried;
-                    upper = lower;
+                #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                unsafe {
+                    use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(j + 16).cast());
+                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
                 }
+
+                let lower = load_a(m);
+                let (r_lo, r_hi) = rev_operand(phi0, idx0, lower, *upper);
+                let fwd = if j < lines {
+                    unsafe { (*src.add(j)).0 }
+                } else {
+                    LimbVec::splat(0)
+                };
+                let sum = add_resolve_line(fwd, r_lo, r_hi, *carry);
+                *out = Limb(sum.packed);
+                *carry = sum.carry_out;
+                carried1 |= sum.carried;
+                *upper = lower;
+            };
+            let n = n0.min(n1);
+            for i in 0..n {
+                a_line(s0 + i, &mut up0, &mut c0, &mut scratch_lo[i]);
+                a_line(s1 + i, &mut up1, &mut c1, &mut scratch_hi[i]);
             }
+            for i in n..n0 {
+                a_line(s0 + i, &mut up0, &mut c0, &mut scratch_lo[i]);
+            }
+            for i in n..n1 {
+                a_line(s1 + i, &mut up1, &mut c1, &mut scratch_hi[i]);
+            }
+            drop(a_line);
 
             // phase B: second-step lines for both ranges, from the first
-            // scratch level into the second. A low-range line reads forward
-            // from the low production and backward from the high one; a
-            // high-range line the reverse.
-            for (range, fwd_range, fwd_scr, rev_range, rev_scr, out) in [
-                (round.r2_lo, round.r1_lo, &*scratch_lo, round.r1_hi, &*scratch_hi, &mut *scratch_lo2),
-                (round.r2_hi, round.r1_hi, &*scratch_hi, round.r1_lo, &*scratch_lo, &mut *scratch_hi2),
-            ] {
-                let (s, e) = range;
-                if s >= e {
-                    continue;
+            // scratch level into the second, the two independent chains
+            // interleaved. A low-range line reads forward from the low
+            // production and backward from the high one; a high-range line
+            // the reverse.
+            let load_s1 = |m: isize, rev_scr: &[Limb], rev_range: (usize, usize)| {
+                if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
+                    unpack_line(rev_scr[m as usize - rev_range.0].0)
+                } else {
+                    debug_assert!(
+                        m < 0 || m as usize >= q1_lines,
+                        "fused pass read outside its scratch ranges"
+                    );
+                    (LimbVec::splat(0), LimbVec::splat(0))
                 }
-                assert!(e - s <= SCRATCH_LINES, "fused scratch range overflow");
-                let load_s = |m: isize| -> (LimbVec, LimbVec) {
-                    if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
-                        unpack_line(rev_scr[m as usize - rev_range.0].0)
-                    } else {
-                        debug_assert!(
-                            m < 0 || m as usize >= q1_lines,
-                            "fused pass read outside its scratch ranges"
-                        );
-                        (LimbVec::splat(0), LimbVec::splat(0))
-                    }
-                };
-                let mut upper = load_s(q1 as isize - s as isize);
-                let mut carry = false;
-                for j in s..e {
-                    let m = q1 as isize - 1 - j as isize;
-                    let lower = load_s(m);
-                    let (r_lo, r_hi) = rev_operand(phi1, idx1, lower, upper);
-                    let fwd = fwd_scr[j - fwd_range.0].0;
-                    let (f_lo, f_hi) = unpack_line(fwd);
-                    all_eq1 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
-                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
-                    out[j - s] = Limb(sum.packed);
-                    carry = sum.carry_out;
-                    carried2 |= sum.carried;
-                    upper = lower;
-                }
+            };
+            let (s0, e0) = round.r2_lo;
+            let (s1, e1) = round.r2_hi;
+            let n0 = e0.saturating_sub(s0);
+            let n1 = e1.saturating_sub(s1);
+            assert!(
+                n0 <= SCRATCH_LINES && n1 <= SCRATCH_LINES,
+                "fused scratch range overflow"
+            );
+            let zero = (LimbVec::splat(0), LimbVec::splat(0));
+            let mut up0 = if n0 > 0 {
+                load_s1(q1 as isize - s0 as isize, scratch_hi, round.r1_hi)
+            } else {
+                zero
+            };
+            let mut up1 = if n1 > 0 {
+                load_s1(q1 as isize - s1 as isize, scratch_lo, round.r1_lo)
+            } else {
+                zero
+            };
+            let mut c0 = false;
+            let mut c1 = false;
+            let mut b_line = |j: usize,
+                              upper: &mut (LimbVec, LimbVec),
+                              carry: &mut bool,
+                              fwd_scr: &[Limb],
+                              fwd_base: usize,
+                              rev_scr: &[Limb],
+                              rev_range: (usize, usize),
+                              out: &mut Limb| {
+                let m = q1 as isize - 1 - j as isize;
+                let lower = load_s1(m, rev_scr, rev_range);
+                let (r_lo, r_hi) = rev_operand(phi1, idx1, lower, *upper);
+                let fwd = fwd_scr[j - fwd_base].0;
+                let (f_lo, f_hi) = unpack_line(fwd);
+                all_eq1 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
+                let sum = add_resolve_line(fwd, r_lo, r_hi, *carry);
+                *out = Limb(sum.packed);
+                *carry = sum.carry_out;
+                carried2 |= sum.carried;
+                *upper = lower;
+            };
+            let n = n0.min(n1);
+            for i in 0..n {
+                b_line(s0 + i, &mut up0, &mut c0, scratch_lo, round.r1_lo.0,
+                       scratch_hi, round.r1_hi, &mut scratch_lo2[i]);
+                b_line(s1 + i, &mut up1, &mut c1, scratch_hi, round.r1_hi.0,
+                       scratch_lo, round.r1_lo, &mut scratch_hi2[i]);
             }
+            for i in n..n0 {
+                b_line(s0 + i, &mut up0, &mut c0, scratch_lo, round.r1_lo.0,
+                       scratch_hi, round.r1_hi, &mut scratch_lo2[i]);
+            }
+            for i in n..n1 {
+                b_line(s1 + i, &mut up1, &mut c1, scratch_hi, round.r1_hi.0,
+                       scratch_lo, round.r1_lo, &mut scratch_hi2[i]);
+            }
+            drop(b_line);
 
             // phase C: the round's two output chunks, from the second
-            // scratch level.
-            for (chunk, fwd_range, fwd_scr, rev_range, rev_scr, is_hi) in [
-                (round.lo, round.r2_lo, &*scratch_lo2, round.r2_hi, &*scratch_hi2, false),
-                (round.hi, round.r2_hi, &*scratch_hi2, round.r2_lo, &*scratch_lo2, true),
-            ] {
-                let (x0, x1) = chunk;
-                if x0 >= x1 {
-                    continue;
-                }
-                let load_s = |m: isize| -> (LimbVec, LimbVec) {
-                    if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
-                        unpack_line(rev_scr[m as usize - rev_range.0].0)
-                    } else {
-                        debug_assert!(
-                            m < 0 || m as usize >= q2_lines,
-                            "fused pass read outside its scratch ranges"
-                        );
-                        (LimbVec::splat(0), LimbVec::splat(0))
-                    }
-                };
-                let mut upper = load_s(q2 as isize - x0 as isize);
-                let mut carry = if is_hi { false } else { lo_carry };
-                for k in x0..x1 {
-                    let m = q2 as isize - 1 - k as isize;
-
-                    #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-                    if !STREAM {
-                        unsafe {
-                            use std::arch::x86_64::{_MM_HINT_ET0, _mm_prefetch};
-                            _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
-                        }
-                    }
-
-                    let lower = load_s(m);
-                    let (r_lo, r_hi) = rev_operand(phi2, idx2, lower, upper);
-                    let fwd = fwd_scr[k - fwd_range.0].0;
-                    let (f_lo, f_hi) = unpack_line(fwd);
-                    all_eq2 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
-                    let sum = add_resolve_line(fwd, r_lo, r_hi, carry);
-                    unsafe { store_line::<STREAM>(dst, k, sum.packed) };
-                    carry = sum.carry_out;
-                    carried3 |= sum.carried;
-                    upper = lower;
-                }
-                if is_hi {
-                    assert!(hi_ord < hi_stride, "fused chunk ordinal overflow");
-                    let slot = (hi - self.num_threads) * hi_stride + hi_ord;
-                    unsafe { (*chunk_carry.add(slot)).store(carry, Relaxed) };
-                    hi_ord += 1;
+            // scratch level, the low chunk's chained carry and the high
+            // chunk's speculated one interleaved.
+            let load_s2 = |m: isize, rev_scr: &[Limb], rev_range: (usize, usize)| {
+                if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
+                    unpack_line(rev_scr[m as usize - rev_range.0].0)
                 } else {
-                    lo_carry = carry;
+                    debug_assert!(
+                        m < 0 || m as usize >= q2_lines,
+                        "fused pass read outside its scratch ranges"
+                    );
+                    (LimbVec::splat(0), LimbVec::splat(0))
                 }
+            };
+            let (x0, x1) = round.lo;
+            let (y0, y1) = round.hi;
+            let n0 = x1.saturating_sub(x0);
+            let n1 = y1.saturating_sub(y0);
+            let mut up0 = if n0 > 0 {
+                load_s2(q2 as isize - x0 as isize, scratch_hi2, round.r2_hi)
+            } else {
+                zero
+            };
+            let mut up1 = if n1 > 0 {
+                load_s2(q2 as isize - y0 as isize, scratch_lo2, round.r2_lo)
+            } else {
+                zero
+            };
+            let mut c0 = lo_carry;
+            let mut c1 = false;
+            let mut c_line = |k: usize,
+                              upper: &mut (LimbVec, LimbVec),
+                              carry: &mut bool,
+                              fwd_scr: &[Limb],
+                              fwd_base: usize,
+                              rev_scr: &[Limb],
+                              rev_range: (usize, usize)| {
+                let m = q2 as isize - 1 - k as isize;
+
+                #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                if !STREAM {
+                    unsafe {
+                        use std::arch::x86_64::{_MM_HINT_ET0, _mm_prefetch};
+                        _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
+                    }
+                }
+
+                let lower = load_s2(m, rev_scr, rev_range);
+                let (r_lo, r_hi) = rev_operand(phi2, idx2, lower, *upper);
+                let fwd = fwd_scr[k - fwd_base].0;
+                let (f_lo, f_hi) = unpack_line(fwd);
+                all_eq2 &= f_lo.simd_eq(r_lo).all() && f_hi.simd_eq(r_hi).all();
+                let sum = add_resolve_line(fwd, r_lo, r_hi, *carry);
+                unsafe { store_line::<STREAM>(dst, k, sum.packed) };
+                *carry = sum.carry_out;
+                carried3 |= sum.carried;
+                *upper = lower;
+            };
+            let n = n0.min(n1);
+            for i in 0..n {
+                c_line(x0 + i, &mut up0, &mut c0, scratch_lo2, round.r2_lo.0,
+                       scratch_hi2, round.r2_hi);
+                c_line(y0 + i, &mut up1, &mut c1, scratch_hi2, round.r2_hi.0,
+                       scratch_lo2, round.r2_lo);
+            }
+            for i in n..n0 {
+                c_line(x0 + i, &mut up0, &mut c0, scratch_lo2, round.r2_lo.0,
+                       scratch_hi2, round.r2_hi);
+            }
+            for i in n..n1 {
+                c_line(y0 + i, &mut up1, &mut c1, scratch_hi2, round.r2_hi.0,
+                       scratch_lo2, round.r2_lo);
+            }
+            drop(c_line);
+            lo_carry = c0;
+            if n1 > 0 {
+                assert!(hi_ord < hi_stride, "fused chunk ordinal overflow");
+                let slot = (hi - self.num_threads) * hi_stride + hi_ord;
+                unsafe { (*chunk_carry.add(slot)).store(c1, Relaxed) };
+                hi_ord += 1;
             }
         });
 
