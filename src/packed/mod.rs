@@ -1,8 +1,12 @@
-//! The dual nibble-packed representation: the number and its digit-reversal
-//! are both kept packed (two digits per byte, the checkpoint format), which
-//! halves the DRAM traffic of an iteration. The reverse-and-add pass reads
-//! the two copies slot-aligned with no skip offset, resolves carries in one
-//! ascending sweep, and produces both next-iteration copies.
+//! The single-copy nibble-packed representation: only the number itself is
+//! kept packed (two digits per byte, the checkpoint format), ping-ponged
+//! between two buffers. The reverse-and-add pass reads the current buffer
+//! with two streams -- forward for a[d], backward from the top for
+//! a[L-1-d], the reversed operand assembled in registers by a descending
+//! funnel permutation -- and writes the sum slot-aligned into the other
+//! buffer. One read pair plus one write per line is 510MB moved per
+//! iteration on a 340MB number, against 680MB for the dual-copy scheme it
+//! replaces.
 //!
 //! Packed line layout (one 64-byte `Limb` holding 128 digits): digit `p` of
 //! the line lives in byte `p` low nibble for `p < 64`, byte `p - 64` high
@@ -11,9 +15,9 @@
 
 use crate::impossible;
 use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec};
-use std::simd::prelude::*;
 use std::alloc::Allocator;
 use std::hint::{cold_path, likely};
+use std::simd::prelude::*;
 
 /// Digits per packed line.
 pub(crate) const DPL: usize = 2 * LV_LEN;
@@ -33,29 +37,26 @@ fn pack_line(lo: LimbVec, hi: LimbVec) -> LimbVec {
 }
 
 /// The result of adding and resolving one packed line: the packed output,
-/// its two unpacked digit halves (low digits first), the carry out of the
-/// top digit, and whether any digit carried.
+/// the carry out of the top digit, and whether any digit carried.
 struct LineSum {
     packed: LimbVec,
-    lo: LimbVec,
-    hi: LimbVec,
     carry_out: bool,
     carried: bool,
 }
 
-/// Adds two packed lines digit-wise and resolves every decimal carry inside
-/// the line, with `carry` into the line's lowest digit. The carry chain runs
-/// over the whole 128-digit line at once: the generate/propagate words of
-/// the two halves concatenate into a u128 (see `resolve_digits` for the
+/// Adds a packed line to an unpacked reversed operand (given as its two
+/// 64-digit planes) and resolves every decimal carry inside the line, with
+/// `carry` into the line's lowest digit. The carry chain runs over the
+/// whole 128-digit line at once: the generate/propagate words of the two
+/// halves concatenate into a u128 (see `resolve_digits` for the
 /// derivation), so the line costs one wide add instead of two chained
 /// 64-digit resolutions.
 #[inline(always)]
-fn add_resolve_line(a: LimbVec, r: LimbVec, carry: bool) -> LineSum {
+fn add_resolve_line(a: LimbVec, r_lo: LimbVec, r_hi: LimbVec, carry: bool) -> LineSum {
     const NINES: LimbVec = LimbVec::splat(9);
     const TOP_BIT: u32 = (2 * LV_LEN - 1) as u32;
 
     let (a_lo, a_hi) = unpack_line(a);
-    let (r_lo, r_hi) = unpack_line(r);
     let sum_lo = a_lo + r_lo;
     let sum_hi = a_hi + r_hi;
 
@@ -100,8 +101,6 @@ fn add_resolve_line(a: LimbVec, r: LimbVec, carry: bool) -> LineSum {
 
     LineSum {
         packed: pack_line(lo, hi),
-        lo,
-        hi,
         carry_out,
         carried: carry_in != 0 || carry_out,
     }
@@ -132,88 +131,29 @@ pub(crate) fn set_digit(lines: &mut [Limb], d: usize, digit: u8) {
     }
 }
 
-/// The 128 digits of packed line `m` as ascending bytes; lines outside
-/// `0..lines.len()` read as zeros (the virtual padding below digit 0 and
-/// above the top line).
-#[inline(always)]
-fn line_digit_bytes(lines: &[Limb], m: isize) -> [u8; DPL] {
-    let mut out = [0u8; DPL];
-    if m >= 0 && (m as usize) < lines.len() {
-        let (lo, hi) = unpack_line(lines[m as usize].0);
-        out[..LV_LEN].copy_from_slice(lo.as_array());
-        out[LV_LEN..].copy_from_slice(hi.as_array());
-    }
-    out
-}
-
-/// Rebuilds `dst` as the digit-reversal of `lines` (`digits` significant
-/// digits): dst slot `s` holds digit `digits - 1 - s`. Slots at and above
-/// `digits` in the top line are zero.
-pub(crate) fn mirror_into<T: Allocator + Clone + Copy>(
-    lines: &[Limb],
-    digits: usize,
-    dst: &mut Vec<Limb, T>,
-) {
-    let lines_out = digits.div_ceil(DPL);
-    dst.clear();
-    dst.reserve(lines_out);
-
-    // dst line l covers slots [DPL*l, DPL*(l+1)) = source digits
-    // [digits - DPL*(l+1), digits - DPL*l) in descending order, so the source
-    // window walks the array downward at the fixed intra-line offset
-    // digits % DPL. The window's two source lines roll: the lower line of
-    // step l is the upper line of step l + 1.
-    let mut upper_digits = line_digit_bytes(lines, (digits as isize - 1).div_euclid(DPL as isize));
-    for l in 0..lines_out {
-        let w = digits as isize - (DPL * (l + 1)) as isize;
-        let m1 = w.div_euclid(DPL as isize);
-        let phi = w.rem_euclid(DPL as isize) as usize;
-
-        let lower_digits = line_digit_bytes(lines, m1);
-        let mut buf = [0u8; 2 * DPL];
-        buf[..DPL].copy_from_slice(&lower_digits);
-        buf[DPL..].copy_from_slice(&upper_digits);
-
-        // window = source digits [w, w + DPL) ascending; the dst line wants
-        // them descending, so its low half is the reversed upper window half.
-        let window = &buf[phi..phi + DPL];
-        let lo = LimbVec::from_slice(&window[LV_LEN..]).reverse();
-        let hi = LimbVec::from_slice(&window[..LV_LEN]).reverse();
-        dst.push(Limb(pack_line(lo, hi)));
-
-        upper_digits = lower_digits;
-    }
-}
-
-/// A number held as two packed copies: `a` is the value LSD-first, and
-/// `rev[cur]` is its digit-reversal, slot-aligned so that
-/// `rev[d] == a[digits - 1 - d]`. The other rev buffer is the write target
-/// of the next iteration.
+/// A number held as one packed copy, ping-ponged between two buffers:
+/// `a[cur]` is the value LSD-first, and `a[1 - cur]` is the write target of
+/// the next iteration.
 pub struct PackedInt<T: Allocator + Clone + Copy> {
-    pub(crate) a: Vec<Limb, T>,
-    rev: [Vec<Limb, T>; 2],
+    a: [Vec<Limb, T>; 2],
     cur: usize,
     pub(crate) digits: usize,
 }
 
 impl<T: Allocator + Clone + Copy> PackedInt<T> {
-    /// Builds the dual representation from a byte-per-digit integer.
+    /// Builds the packed representation from a byte-per-digit integer.
     pub fn from_integer(integer: &Integer<T>, allocator: T) -> Self {
         if integer.0.is_empty() {
             impossible!("Tried to pack an empty integer");
         }
         let digits = integer.len() as usize;
-        let mut a = Vec::with_capacity_in(integer.0.len().div_ceil(2), allocator);
+        let mut buf = Vec::with_capacity_in(integer.0.len().div_ceil(2), allocator);
         for pair in integer.0.chunks(2) {
             let hi = if pair.len() == 2 { pair[1].0 } else { LimbVec::splat(0) };
-            a.push(Limb(pack_line(pair[0].0, hi)));
+            buf.push(Limb(pack_line(pair[0].0, hi)));
         }
-        let mut rev0 = Vec::new_in(allocator);
-        mirror_into(&a, digits, &mut rev0);
-        let rev1 = rev0.clone();
         Self {
-            a,
-            rev: [rev0, rev1],
+            a: [buf, Vec::new_in(allocator)],
             cur: 0,
             digits,
         }
@@ -221,9 +161,10 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
 
     /// The value as a byte-per-digit integer (for reports and checkpoints).
     pub fn to_integer<G: Allocator + Clone + Copy>(&self, allocator: G) -> Integer<G> {
-        let mut out = Vec::with_capacity_in(self.a.len() * 2, allocator);
+        let a = &self.a[self.cur];
+        let mut out = Vec::with_capacity_in(a.len() * 2, allocator);
         let limbs = self.digits.div_ceil(LV_LEN);
-        for line in &self.a {
+        for line in a {
             let (lo, hi) = unpack_line(line.0);
             out.push(Limb(lo));
             out.push(Limb(hi));
@@ -234,15 +175,17 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
 
     #[cfg(test)]
     #[inline]
-    pub(crate) fn rev_cur(&self) -> &[Limb] {
-        &self.rev[self.cur]
+    pub(crate) fn a_cur(&self) -> &[Limb] {
+        &self.a[self.cur]
     }
 
-    /// Whether the value is a palindrome: the two copies are slot-identical.
+    /// Whether the value is a palindrome: every digit equals its mirror.
+    /// Called only on iterations where nothing carried, which is rare, so a
+    /// scalar scan suffices.
     #[inline]
     pub fn is_palindrome(&self) -> bool {
-        let lines = self.digits.div_ceil(DPL);
-        self.a[..lines] == self.rev[self.cur][..lines]
+        let a = &self.a[self.cur];
+        (0..self.digits / 2).all(|d| digit_at(a, d) == digit_at(a, self.digits - 1 - d))
     }
 
     /// Whether the next reverse-and-add gains a digit, decided exactly before
@@ -250,9 +193,10 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
     /// propagate whatever comes from below); the first other sum decides.
     /// All-nines sums generate no carry at all and do not grow.
     pub(crate) fn prescan_grow(&self) -> bool {
+        let a = &self.a[self.cur];
         let l = self.digits;
         for d in (0..l).rev() {
-            let s = digit_at(&self.a, d) + digit_at(&self.a, l - 1 - d);
+            let s = digit_at(a, d) + digit_at(a, l - 1 - d);
             if s != 9 {
                 return s > 9;
             }
@@ -260,60 +204,62 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         false
     }
 
-    /// One reverse-and-add step, single-threaded: an ascending fused add over
-    /// the two copies with an exact running carry, then the mirror rebuild
-    /// into the spare rev buffer. Returns whether any digit carried.
+    /// One reverse-and-add step, single-threaded: an ascending fused add with
+    /// an exact running carry, the reversed operand gathered digit by digit.
+    /// The scalar gather keeps this path independent of the funnel machinery
+    /// the engine uses, so their agreement pins the funnel down.
     #[cfg(test)]
     pub fn step(&mut self) -> bool {
         let l = self.digits;
         let grew = self.prescan_grow();
         let lp = l + grew as usize;
         let lines = l.div_ceil(DPL);
+        let lines_out = lp.div_ceil(DPL);
+
+        let [b0, b1] = &mut self.a;
+        let (src, dst) = if self.cur == 0 { (&*b0, b1) } else { (&*b1, b0) };
+        dst.resize(lines_out, Limb::new());
 
         let mut carry = false;
         let mut any_carried = false;
         for k in 0..lines {
-            let sum = add_resolve_line(self.a[k].0, self.rev[self.cur][k].0, carry);
-            self.a[k] = Limb(sum.packed);
+            let mut r = [0u8; DPL];
+            for (p, byte) in r.iter_mut().enumerate() {
+                let d = DPL * k + p;
+                if d < l {
+                    *byte = digit_at(src, l - 1 - d);
+                }
+            }
+            let r_lo = LimbVec::from_slice(&r[..LV_LEN]);
+            let r_hi = LimbVec::from_slice(&r[LV_LEN..]);
+            let sum = add_resolve_line(src[k].0, r_lo, r_hi, carry);
+            dst[k] = Limb(sum.packed);
             carry = sum.carry_out;
             any_carried |= sum.carried;
         }
         if carry {
             // only reachable when the top line was full to the brim
-            let mut top = LimbVec::splat(0);
-            top[0] = 1;
-            self.a.push(Limb(top));
+            debug_assert!(grew && l % DPL == 0);
+            set_digit(dst, lp - 1, 1);
         }
 
-        debug_assert_eq!(lp.div_ceil(DPL), self.a.len().min(lp.div_ceil(DPL)));
-        debug_assert!(digit_at(&self.a, lp - 1) != 0, "prescan missed growth");
-        debug_assert!(
-            lp % DPL == 0 || self.a.len() * DPL <= lp + DPL,
-            "prescan over-grew"
-        );
-        if lp < self.a.len() * DPL {
+        debug_assert!(digit_at(dst, lp - 1) != 0, "prescan missed growth");
+        if lp < dst.len() * DPL {
             debug_assert_eq!(
-                (lp..(lines.max(lp.div_ceil(DPL)) * DPL).min(self.a.len() * DPL))
-                    .map(|d| digit_at(&self.a, d))
-                    .max()
-                    .unwrap_or(0),
+                (lp..dst.len() * DPL).map(|d| digit_at(dst, d)).max().unwrap_or(0),
                 0,
                 "dirty padding above the top digit"
             );
         }
 
         self.digits = lp;
-        let (a, rev) = (&self.a, &mut self.rev);
-        let next = 1 - self.cur;
-        mirror_into(a, lp, &mut rev[next]);
-        self.cur = next;
+        self.cur = 1 - self.cur;
 
         likely(any_carried)
     }
 }
 
 use crate::parallel::{Padded, SpinBarrier, allowed_cpus, pin_participant};
-use std::cell::UnsafeCell;
 use std::hint::unlikely;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -325,58 +271,32 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
 struct SharedPacked {
     barrier: SpinBarrier,
     num_threads: usize,
-    a_ptr: AtomicPtr<Limb>,
-    rev_src: AtomicPtr<Limb>,
-    rev_dst: AtomicPtr<Limb>,
+    a_src: AtomicPtr<Limb>,
+    a_dst: AtomicPtr<Limb>,
     /// Input lines: ceil(digits / DPL).
     lines: AtomicUsize,
-    /// The output digit count, prescanned exactly before the pass; every
-    /// rev_dst write slot derives from it.
-    out_digits: AtomicUsize,
+    /// The input digit count; the backward stream's line indices and
+    /// intra-line phase derive from it.
+    digits: AtomicUsize,
     stop: AtomicBool,
     ever_carried: AtomicBool,
     /// 2 * num_threads + 1 entries: block boundaries in lines.
     bounds: Box<[AtomicUsize]>,
     /// 2 * num_threads entries: each block's speculative carry-out.
     block_carry: Box<[Padded<AtomicBool>]>,
-    /// Reversed digit windows of each block's first and last chunk, for the
-    /// coordinator to assemble the rev_dst lines that straddle block seams.
-    stash_first: Box<[Padded<UnsafeCell<[u8; DPL]>>]>,
-    stash_last: Box<[Padded<UnsafeCell<[u8; DPL]>>]>,
 }
 
-// The raw pointers partition by block, the stashes are written only by the
-// block's owner, and the barrier orders every access.
+// The destination pointer partitions by block, the source is read-only
+// during the pass, and the barrier orders every access.
 unsafe impl Send for SharedPacked {}
 unsafe impl Sync for SharedPacked {}
 
-/// A chunk's resolved digits as two vectors, top half first: the reversal
-/// into rev_dst is folded into the emission's funnel indices, so the halves
-/// stay in digit-ascending order.
-type RevWindow = (LimbVec, LimbVec);
-
-const ZERO_WINDOW: RevWindow = (LimbVec::splat(0), LimbVec::splat(0));
-
-#[inline]
-fn store_window(stash: &mut [u8; DPL], window: RevWindow) {
-    stash[..LV_LEN].copy_from_slice(window.0.as_array());
-    stash[LV_LEN..].copy_from_slice(window.1.as_array());
-}
-
-#[inline]
-fn load_window(stash: &[u8; DPL]) -> RevWindow {
-    (
-        LimbVec::from_slice(&stash[..LV_LEN]),
-        LimbVec::from_slice(&stash[LV_LEN..]),
-    )
-}
-
-/// The funnel index for `emit_rev_line`: byte `j` of an emitted plane is
-/// `concat(reverse(a), reverse(b))[s + j]`, which is byte `(63 - s - j) mod
-/// 128` of `concat(a, b)` -- a descending two-source permutation. `s` is a
-/// per-iteration constant, so the index vector is built once per block.
-/// Because the indices descend, no lowering of the permutation can become a
-/// contiguous load; the reversal is what keeps the funnel in registers.
+/// The funnel index for `rev_operand`: byte `j` of an assembled plane is a
+/// DESCENDING walk over the concatenation of two source planes, so `idx[j]
+/// = 63 - s - j` with `s` chosen per phase branch. `s` is a per-iteration
+/// constant, so the index vector is built once per block. Because the
+/// indices descend, no lowering of the permutation can become a contiguous
+/// load; the reversal is what keeps the funnel in registers.
 #[inline]
 fn funnel_index(s: usize) -> LimbVec {
     const IOTA: LimbVec = {
@@ -424,65 +344,65 @@ fn funnel(a: LimbVec, idx: LimbVec, b: LimbVec) -> LimbVec {
     }
 }
 
-/// Buffer size in lines above which the pass's rev_dst stores go around the
-/// cache: the three buffers no longer fit in an L3, and a fresh-write stream
-/// pays a read-for-ownership per line unless stored non-temporally.
-const STREAM_MIN_LINES: usize = 1 << 19;
-
-/// The per-iteration emission constants: the intra-line offset `phi`, the
-/// funnel index for the shift `emit_rev_line`'s `phi` branch uses, and `q`
-/// such that chunk `k` completes rev_dst line `q - k`.
+/// The funnel index the `rev_operand` branch for `phi` uses.
 #[inline]
-fn emit_params(out_digits: usize) -> (usize, LimbVec, isize) {
-    let phi = out_digits % DPL;
-    let shift = if phi > LV_LEN { DPL - phi } else { LV_LEN - phi };
-    (phi, funnel_index(shift), (out_digits / DPL) as isize)
+fn rev_index(phi: usize) -> LimbVec {
+    let s = if phi > LV_LEN {
+        3 * LV_LEN - phi
+    } else {
+        2 * LV_LEN - phi
+    };
+    funnel_index(s)
 }
 
-/// Writes rev_dst line `target`, assembled from the digits of chunk `k`
-/// (`cur`) and chunk `k - 1` (`prev`), both in ascending order: the funnel
-/// indices perform the digit reversal. Chunk `k` covers rev slots
-/// [out_digits - DPL*(k+1), out_digits - DPL*k); the line completed by its
-/// arrival is the one holding the top of that window, `out_digits / DPL - k`.
-/// Targets outside [0, lines_out) are the virtual lines above the top or
-/// below slot zero. `phi` is `out_digits % DPL` and `idx` comes from
-/// `funnel_index` of the shift the `phi` branch uses.
+/// The reversed operand for one output line as its two 64-digit planes
+/// (low plane first). Output line k covers slots [DPL*k, DPL*(k+1)), which
+/// read source digits (L-1-DPL*k) down to (L-DPL*(k+1)): a 128-digit window
+/// at intra-line phase `phi = L mod DPL`, spanning source lines `lower` (the
+/// window's low end) and `upper` (its high end), each given unpacked. The
+/// funnel's descending indices perform the digit reversal; `idx` comes from
+/// `rev_index(phi)`.
 #[inline(always)]
-unsafe fn emit_rev_line<const STREAM: bool>(
-    rev_dst: *mut Limb,
-    target: isize,
-    lines_out: usize,
+fn rev_operand(
     phi: usize,
     idx: LimbVec,
-    cur: RevWindow,
-    prev: RevWindow,
-) {
-    if target < 0 || target >= lines_out as isize {
-        return;
-    }
-
-    // The line is the 128 reversed digit bytes at offset DPL - phi of the
-    // reversed [cur, prev]; its first 64 bytes are the low-digit plane.
-    let (lo, hi) = if phi == 0 {
-        (prev.0.reverse(), prev.1.reverse())
-    } else if phi > LV_LEN {
-        (funnel(cur.0, idx, cur.1), funnel(cur.1, idx, prev.0))
+    lower: (LimbVec, LimbVec),
+    upper: (LimbVec, LimbVec),
+) -> (LimbVec, LimbVec) {
+    if phi == 0 {
+        (lower.1.reverse(), lower.0.reverse())
+    } else if phi <= LV_LEN {
+        (
+            funnel(lower.1, idx, upper.0),
+            funnel(lower.0, idx, lower.1),
+        )
     } else {
-        (funnel(cur.1, idx, prev.0), funnel(prev.0, idx, prev.1))
-    };
-    let line = pack_line(lo, hi);
+        (
+            funnel(upper.0, idx, upper.1),
+            funnel(lower.1, idx, upper.0),
+        )
+    }
+}
 
+/// Buffer size in lines above which the pass's destination stores go around
+/// the cache: the two buffers no longer fit in an L3, and a fresh-write
+/// stream pays a read-for-ownership per line unless stored non-temporally.
+const STREAM_MIN_LINES: usize = 1 << 19;
+
+/// Stores one resolved output line, non-temporally when the pass streams.
+#[inline(always)]
+unsafe fn store_line<const STREAM: bool>(dst: *mut Limb, k: usize, line: LimbVec) {
     #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
     if STREAM {
         unsafe {
             use std::arch::x86_64::{__m512i, _mm512_stream_si512};
-            _mm512_stream_si512(rev_dst.add(target as usize).cast(), __m512i::from(line));
+            _mm512_stream_si512(dst.add(k).cast(), __m512i::from(line));
         }
         return;
     }
 
     unsafe {
-        *rev_dst.add(target as usize) = Limb(line);
+        *dst.add(k) = Limb(line);
     }
 }
 
@@ -491,32 +411,27 @@ impl SharedPacked {
         Self {
             barrier: SpinBarrier::new(num_threads),
             num_threads,
-            a_ptr: AtomicPtr::new(std::ptr::null_mut()),
-            rev_src: AtomicPtr::new(std::ptr::null_mut()),
-            rev_dst: AtomicPtr::new(std::ptr::null_mut()),
+            a_src: AtomicPtr::new(std::ptr::null_mut()),
+            a_dst: AtomicPtr::new(std::ptr::null_mut()),
             lines: AtomicUsize::new(0),
-            out_digits: AtomicUsize::new(0),
+            digits: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             ever_carried: AtomicBool::new(false),
             bounds: (0..=num_threads * 2).map(|_| AtomicUsize::new(0)).collect(),
             block_carry: (0..num_threads * 2)
                 .map(|_| Padded(AtomicBool::new(false)))
                 .collect(),
-            stash_first: (0..num_threads * 2)
-                .map(|_| Padded(UnsafeCell::new([0; DPL])))
-                .collect(),
-            stash_last: (0..num_threads * 2)
-                .map(|_| Padded(UnsafeCell::new([0; DPL])))
-                .collect(),
         }
     }
 
-    /// The fused pass over block `j`: add the two copies line by line with a
-    /// speculative carry-in of zero, write the sums over `a` in place, and
-    /// scatter the reversed digits into rev_dst. A chunk's reversed window
-    /// straddles two rev_dst lines, so each chunk's arrival completes one
-    /// line from itself and its predecessor; the windows at the block's
-    /// edges are stashed for the coordinator's seam assembly.
+    /// The fused pass over block `j`: for each output line, gather the
+    /// reversed operand from the backward stream's rolling line pair, add it
+    /// to the forward stream's line with a speculative carry-in of zero, and
+    /// store the sum slot-aligned into the destination buffer. Lines outside
+    /// the source read as zeros (the virtual padding below digit 0 and above
+    /// the top line), which also zeros the output's top-line padding: sums
+    /// there are 0 + 0, and a carry out of the top digit lands in the first
+    /// padding slot as the grown number's leading 1.
     fn run_block(&self, j: usize) {
         if self.lines.load(Relaxed) >= STREAM_MIN_LINES {
             self.run_block_inner::<true>(j);
@@ -526,12 +441,10 @@ impl SharedPacked {
     }
 
     fn run_block_inner<const STREAM: bool>(&self, j: usize) {
-        let a = self.a_ptr.load(Relaxed);
-        let rsrc = self.rev_src.load(Relaxed);
-        let rdst = self.rev_dst.load(Relaxed);
+        let src = self.a_src.load(Relaxed);
+        let dst = self.a_dst.load(Relaxed);
         let lines = self.lines.load(Relaxed);
-        let out_digits = self.out_digits.load(Relaxed);
-        let lines_out = out_digits.div_ceil(DPL);
+        let digits = self.digits.load(Relaxed);
 
         let start = self.bounds[j].load(Relaxed);
         let end = self.bounds[j + 1].load(Relaxed);
@@ -540,59 +453,42 @@ impl SharedPacked {
             return;
         }
 
-        let (phi, idx, q) = emit_params(out_digits);
+        let phi = digits % DPL;
+        let idx = rev_index(phi);
+        let q = (digits / DPL) as isize;
 
+        let load = |m: isize| -> (LimbVec, LimbVec) {
+            if m >= 0 && (m as usize) < lines {
+                unpack_line(unsafe { (*src.offset(m)).0 })
+            } else {
+                (LimbVec::splat(0), LimbVec::splat(0))
+            }
+        };
+
+        let mut upper = load(q - start as isize);
         let mut carry = false;
         let mut any_carried = false;
-        let mut prev = ZERO_WINDOW;
 
         for k in start..end {
+            let m = q - 1 - k as isize;
+
             #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
             unsafe {
                 use std::arch::x86_64::{_MM_HINT_ET0, _MM_HINT_T0, _mm_prefetch};
-                _mm_prefetch::<_MM_HINT_ET0>(a.add(k + 16).cast());
-                _mm_prefetch::<_MM_HINT_T0>(rsrc.add(k + 16).cast());
+                _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(k + 16).cast());
+                _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
+                if !STREAM {
+                    _mm_prefetch::<_MM_HINT_ET0>(dst.wrapping_add(k + 16).cast());
+                }
             }
 
-            let sum = unsafe {
-                let out = add_resolve_line((*a.add(k)).0, (*rsrc.add(k)).0, carry);
-                (*a.add(k)).0 = out.packed;
-                out
-            };
+            let lower = load(m);
+            let (r_lo, r_hi) = rev_operand(phi, idx, lower, upper);
+            let sum = add_resolve_line(unsafe { (*src.add(k)).0 }, r_lo, r_hi, carry);
+            unsafe { store_line::<STREAM>(dst, k, sum.packed) };
             carry = sum.carry_out;
             any_carried |= sum.carried;
-
-            let cur = (sum.hi, sum.lo);
-            let target = q - k as isize;
-
-            if likely(k > start) {
-                unsafe { emit_rev_line::<STREAM>(rdst, target, lines_out, phi, idx, cur, prev) };
-            } else if k == 0 {
-                // the top rev_dst line: nothing above the window but padding
-                unsafe {
-                    emit_rev_line::<STREAM>(rdst, target, lines_out, phi, idx, cur, ZERO_WINDOW)
-                };
-            } else {
-                unsafe { store_window(&mut *self.stash_first[j].0.get(), cur) };
-            }
-            prev = cur;
-        }
-
-        if end == lines {
-            // the bottom rev_dst line: nothing below the last window
-            unsafe {
-                emit_rev_line::<STREAM>(
-                    rdst,
-                    q - end as isize,
-                    lines_out,
-                    phi,
-                    idx,
-                    ZERO_WINDOW,
-                    prev,
-                )
-            };
-        } else {
-            unsafe { store_window(&mut *self.stash_last[j].0.get(), prev) };
+            upper = lower;
         }
 
         #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
@@ -609,8 +505,10 @@ impl SharedPacked {
     }
 
     /// Both blocks of participant `t`, mirror-owned like the byte engine:
-    /// the rev_dst lines a block emits are the mirror of its own line range,
-    /// which is the participant's other block.
+    /// a block's backward stream reads the mirror of its own line range,
+    /// which is the participant's other block, so below the streaming
+    /// threshold the second block's reads hit the lines the first block
+    /// already pulled in.
     #[inline]
     fn run_blocks(&self, t: usize) {
         self.run_block(t);
@@ -685,22 +583,17 @@ impl PackedEngine {
         let lines = digits.div_ceil(DPL);
         let lines_out = out_digits.div_ceil(DPL);
 
-        // Growth past the top line is decided by the prescan, so the line
-        // can be appended before the pass; its single digit is set after
-        // the carry scan confirms it.
-        if lines_out > x.a.len() {
-            x.a.push(Limb::new());
-        }
+        // Growth past the top line is decided by the prescan; the resize
+        // zeroes the appended line, whose single digit is set after the
+        // carry scan confirms it. The destination never shrinks, and its
+        // stale lines all sit below `lines`, which the pass overwrites.
         let next = 1 - x.cur;
-        x.rev[next].resize(lines_out, Limb::new());
+        x.a[next].resize(lines_out, Limb::new());
 
-        shared.a_ptr.store(x.a.as_mut_ptr(), Relaxed);
-        shared
-            .rev_src
-            .store(x.rev[x.cur].as_ptr().cast_mut(), Relaxed);
-        shared.rev_dst.store(x.rev[next].as_mut_ptr(), Relaxed);
+        shared.a_src.store(x.a[x.cur].as_ptr().cast_mut(), Relaxed);
+        shared.a_dst.store(x.a[next].as_mut_ptr(), Relaxed);
         shared.lines.store(lines, Relaxed);
-        shared.out_digits.store(out_digits, Relaxed);
+        shared.digits.store(digits, Relaxed);
         shared.ever_carried.store(false, Relaxed);
         for k in 0..=num_blocks {
             shared.bounds[k].store(k * lines / num_blocks, Relaxed);
@@ -709,38 +602,8 @@ impl PackedEngine {
         shared.barrier.wait();
         shared.run_blocks(0);
 
-        // Seam lines: rev_dst lines straddling a block boundary are built
-        // from the last window below the seam and the first window above it.
-        let (phi, idx, q) = emit_params(out_digits);
-        let mut below: Option<RevWindow> = None;
-        for j in 0..num_blocks {
-            let start = shared.bounds[j].load(Relaxed);
-            let end = shared.bounds[j + 1].load(Relaxed);
-            if start >= end {
-                continue;
-            }
-            if let Some(prev) = below
-                && start != 0
-            {
-                let cur = load_window(unsafe { &*shared.stash_first[j].0.get() });
-                unsafe {
-                    emit_rev_line::<false>(
-                        x.rev[next].as_mut_ptr(),
-                        q - start as isize,
-                        lines_out,
-                        phi,
-                        idx,
-                        cur,
-                        prev,
-                    );
-                }
-            }
-            below = Some(load_window(unsafe { &*shared.stash_last[j].0.get() }));
-        }
-
         // Serial carry resolution across blocks: a block whose true carry-in
-        // turned out to be one gets a decimal increment at its base. Any
-        // digit the increment changes is mirrored into rev_dst.
+        // turned out to be one gets a decimal increment at its base.
         let mut carry = false;
         for j in 0..num_blocks {
             let start = shared.bounds[j].load(Relaxed);
@@ -751,12 +614,8 @@ impl PackedEngine {
             let mut carry_out = shared.block_carry[j].0.load(Relaxed);
             if unlikely(carry) {
                 cold_path();
-                let d0 = start * DPL;
-                let (changed_until, escaped) =
-                    increment_digits(&mut x.a, d0, (end * DPL).min(out_digits));
-                for d in d0..changed_until {
-                    set_digit(&mut x.rev[next], out_digits - 1 - d, digit_at(&x.a, d));
-                }
+                let (_, escaped) =
+                    increment_digits(&mut x.a[next], start * DPL, (end * DPL).min(out_digits));
                 carry_out |= escaped;
             }
             carry = carry_out;
@@ -766,14 +625,16 @@ impl PackedEngine {
             // only reachable when the input's top line was full to the brim
             cold_path();
             debug_assert!(grew && digits % DPL == 0);
-            set_digit(&mut x.a, out_digits - 1, 1);
-            set_digit(&mut x.rev[next], 0, 1);
+            set_digit(&mut x.a[next], out_digits - 1, 1);
         }
 
         x.digits = out_digits;
         x.cur = next;
 
-        debug_assert!(digit_at(&x.a, out_digits - 1) != 0, "prescan missed growth");
+        debug_assert!(
+            digit_at(&x.a[next], out_digits - 1) != 0,
+            "prescan missed growth"
+        );
         shared.ever_carried.load(Relaxed)
     }
 }
@@ -788,8 +649,8 @@ impl Drop for PackedEngine {
     }
 }
 
-/// The iteration loop over the dual packed representation. The engine runs
-/// with one participant while the number is small, and widens at the same
+/// The iteration loop over the packed representation. The engine runs with
+/// one participant while the number is small, and widens at the same
 /// working-set thresholds as the byte engine (expressed there in 64-digit
 /// limbs).
 #[inline]

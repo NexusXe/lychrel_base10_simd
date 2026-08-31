@@ -23,26 +23,22 @@ fn random_integer(num_limbs: usize, rng: &mut SmallRng) -> Integer<Global> {
     Integer(limbs)
 }
 
-/// Round trip and the mirror invariant rev[d] == a[digits - 1 - d].
+/// Every slot at and above `digits` in the packed buffer is zero.
+fn assert_clean_padding(x: &PackedInt<Global>, context: &str) {
+    for d in x.digits..x.a_cur().len() * super::DPL {
+        assert_eq!(digit_at(x.a_cur(), d), 0, "dirty padding: {context}, slot {d}");
+    }
+}
+
+/// Round trip through the packed representation.
 #[test]
-fn test_packed_round_trip_and_mirror() {
+fn test_packed_round_trip() {
     let mut rng = SmallRng::seed_from_u64(0x196);
     for num_limbs in [1usize, 2, 3, 5, 8, 17, 33] {
         let integer = random_integer(num_limbs, &mut rng);
         let packed = PackedInt::from_integer(&integer, Global);
         assert!(packed.to_integer(Global) == integer, "{num_limbs} limbs");
-
-        let digits = packed.digits;
-        for d in 0..digits {
-            assert_eq!(
-                digit_at(packed.rev_cur(), d),
-                digit_at(&packed.a, digits - 1 - d),
-                "mirror broken at slot {d} of {digits}"
-            );
-        }
-        for d in digits..packed.rev_cur().len() * super::DPL {
-            assert_eq!(digit_at(packed.rev_cur(), d), 0, "dirty rev padding");
-        }
+        assert_clean_padding(&packed, "from_integer");
     }
 }
 
@@ -108,8 +104,9 @@ fn test_packed_196_trajectory() {
 }
 
 /// The engine must agree with the serial packed step (itself pinned to the
-/// serial kernel above) step for step, across thread counts and sizes that
-/// produce empty blocks, single-line blocks, seam lines, and growth.
+/// serial kernel above, funnel machinery included) step for step, across
+/// thread counts and sizes that produce empty blocks, single-line blocks,
+/// and growth.
 #[test]
 fn test_packed_engine_matches_serial() {
     let mut rng = SmallRng::seed_from_u64(0x196);
@@ -133,28 +130,16 @@ fn test_packed_engine_matches_serial() {
                     threaded.to_integer(Global) == serial.to_integer(Global),
                     "value diverged: {num_threads} threads, {num_limbs} limbs, step {step}"
                 );
-                let digits = threaded.digits;
-                for d in 0..digits {
-                    assert_eq!(
-                        digit_at(threaded.rev_cur(), d),
-                        digit_at(&threaded.a, digits - 1 - d),
-                        "engine rev mirror broken: {num_threads} threads, {num_limbs} limbs, step {step}, slot {d}"
-                    );
-                }
-                for d in digits..threaded.rev_cur().len() * super::DPL {
-                    assert_eq!(
-                        digit_at(threaded.rev_cur(), d),
-                        0,
-                        "dirty engine rev padding: {num_threads} threads, {num_limbs} limbs, step {step}, slot {d}"
-                    );
-                }
+                assert_clean_padding(
+                    &threaded,
+                    &format!("{num_threads} threads, {num_limbs} limbs, step {step}"),
+                );
             }
         }
     }
 }
 
-/// All-nines inputs exercise the cross-block increment fixup and its
-/// mirrored patching of the fresh rev buffer.
+/// All-nines inputs exercise the cross-block increment fixup.
 #[test]
 fn test_packed_engine_all_nines() {
     for num_threads in [2, 5] {
@@ -172,14 +157,10 @@ fn test_packed_engine_all_nines() {
                     threaded.to_integer(Global) == serial.to_integer(Global),
                     "value diverged: {num_threads} threads, {num_limbs} limbs, step {step}"
                 );
-                let digits = threaded.digits;
-                for d in 0..digits {
-                    assert_eq!(
-                        digit_at(threaded.rev_cur(), d),
-                        digit_at(&threaded.a, digits - 1 - d),
-                        "engine rev mirror broken after fixup: step {step}, slot {d}"
-                    );
-                }
+                assert_clean_padding(
+                    &threaded,
+                    &format!("all-nines, {num_threads} threads, {num_limbs} limbs, step {step}"),
+                );
             }
         }
     }
@@ -201,7 +182,7 @@ fn test_packed_engine_196_trajectory() {
     }
 }
 
-/// Palindromes are detected exactly when the copies coincide.
+/// Palindromes are detected exactly when every digit equals its mirror.
 #[test]
 fn test_packed_palindrome() {
     for digits in ["5", "44", "121", "123454321", "1230321"] {
