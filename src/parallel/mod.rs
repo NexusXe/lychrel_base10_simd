@@ -1,12 +1,21 @@
+#[cfg(any(test, feature = "reference-impl"))]
 use crate::impossible;
-use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, add_block, increment_block};
+use crate::integer_limb::Integer;
+#[cfg(any(test, feature = "reference-impl"))]
+use crate::integer_limb::{LV_LEN, Limb, LimbVec, add_block, increment_block};
 use std::alloc::{Allocator, Global};
-use std::hint::{cold_path, likely, spin_loop, unlikely};
+#[cfg(any(test, feature = "reference-impl"))]
+use std::hint::{cold_path, likely, unlikely};
+use std::hint::spin_loop;
+#[cfg(any(test, feature = "reference-impl"))]
 use std::sync::Arc;
+#[cfg(any(test, feature = "reference-impl"))]
+use std::sync::atomic::{AtomicBool, AtomicPtr};
 use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicUsize,
+    AtomicUsize,
     Ordering::{AcqRel, Acquire, Relaxed},
 };
+#[cfg(any(test, feature = "reference-impl"))]
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -36,7 +45,7 @@ pub const PAR_THRESHOLD_LIMBS: usize = 4096;
 pub const PAR_FULL_THREADS_LIMBS: usize = 49152;
 
 /// Threads for one CCD; the cap applied between the two size thresholds.
-const ONE_CCD_THREADS: usize = 8;
+pub(crate) const ONE_CCD_THREADS: usize = 8;
 
 /// Centralized sense-reversing barrier. All waiters spin; the engine never
 /// parks a thread, since iterations are microseconds apart.
@@ -75,6 +84,7 @@ pub(crate) struct Padded<T>(pub(crate) T);
 /// Per-iteration state published by the coordinator before the start barrier
 /// and read by every worker after it. All accesses are Relaxed: the barriers
 /// provide the acquire/release edges.
+#[cfg(any(test, feature = "reference-impl"))]
 struct Shared {
     barrier: SpinBarrier,
     num_threads: usize,
@@ -93,9 +103,12 @@ struct Shared {
 
 // The raw pointer is to the limb buffer, whose accesses are partitioned by
 // block and ordered by the barrier.
+#[cfg(any(test, feature = "reference-impl"))]
 unsafe impl Send for Shared {}
+#[cfg(any(test, feature = "reference-impl"))]
 unsafe impl Sync for Shared {}
 
+#[cfg(any(test, feature = "reference-impl"))]
 impl Shared {
     fn new(num_threads: usize) -> Self {
         Self {
@@ -262,11 +275,13 @@ pub fn auto_threads() -> usize {
 /// A persistent pool of worker threads executing the fused reverse-and-add in
 /// lockstep with the calling thread. The caller is participant 0; `step` is
 /// a drop-in equivalent of `Integer::fused_reverse_add_asm_interleave`.
+#[cfg(any(test, feature = "reference-impl"))]
 pub struct ParallelEngine {
     shared: Arc<Shared>,
     handles: Vec<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(any(test, feature = "reference-impl"))]
 impl ParallelEngine {
     #[must_use]
     pub fn new(num_threads: usize) -> Self {
@@ -357,6 +372,7 @@ impl ParallelEngine {
     }
 }
 
+#[cfg(any(test, feature = "reference-impl"))]
 impl Drop for ParallelEngine {
     fn drop(&mut self) {
         self.shared.stop.store(true, Relaxed);
@@ -369,6 +385,7 @@ impl Drop for ParallelEngine {
 
 /// The iteration loop. The engine runs with one participant while the
 /// integer is small, and widens at the two size thresholds above.
+#[cfg(any(test, feature = "reference-impl"))]
 #[inline]
 pub fn iterate_parallel<T: Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,

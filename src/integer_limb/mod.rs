@@ -451,6 +451,7 @@ pub(crate) fn resolve_digits(sums: LimbVec, forward_carry: bool) -> (LimbVec, bo
 /// the limb, returning the carry out of the limb. `forward_carry` is the carry
 /// into the limb's lowest digit. Both operands must hold clean digits (0..=9).
 #[inline(always)]
+#[cfg(any(test, feature = "reference-impl"))]
 pub(crate) unsafe fn add_resolve_limb(
     limb: &mut Limb,
     reversed_limb: LimbVec,
@@ -504,6 +505,7 @@ pub(crate) unsafe fn add_resolve_limb(
 /// `boundary_limb` must hold the zipped value of limb `end`: the last limb's
 /// unaligned reload straddles into it, and in a threaded pass its owner may
 /// have already replaced it with its own add result.
+#[cfg(any(test, feature = "reference-impl"))]
 pub(crate) unsafe fn add_block(
     limbs_ptr: *mut LimbVec,
     start: usize,
@@ -551,6 +553,7 @@ pub(crate) unsafe fn add_block(
 /// carry upward through limbs `start..end`. Returns true when the carry
 /// propagates out of the whole range, which requires every digit in it to be
 /// nine. Digits must already be resolved (0..=9).
+#[cfg(any(test, feature = "reference-impl"))]
 pub(crate) unsafe fn increment_block(limbs_ptr: *mut LimbVec, start: usize, end: usize) -> bool {
     const FULL_MASK: u64 = if LV_LEN == u64::BITS as usize {
         u64::MAX

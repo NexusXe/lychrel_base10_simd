@@ -13,7 +13,6 @@ use crate::impossible;
 use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, resolve_digits};
 use std::alloc::Allocator;
 use std::hint::{cold_path, likely};
-use std::simd::prelude::*;
 
 /// Digits per packed line.
 pub(crate) const DPL: usize = 2 * LV_LEN;
@@ -175,7 +174,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
     }
 
     /// The value as a byte-per-digit integer (for reports and checkpoints).
-    pub fn to_integer(&self, allocator: T) -> Integer<T> {
+    pub fn to_integer<G: Allocator + Clone + Copy>(&self, allocator: G) -> Integer<G> {
         let mut out = Vec::with_capacity_in(self.a.len() * 2, allocator);
         let limbs = self.digits.div_ceil(LV_LEN);
         for line in &self.a {
@@ -187,6 +186,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         Integer(out)
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn rev_cur(&self) -> &[Limb] {
         &self.rev[self.cur]
@@ -217,6 +217,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
     /// One reverse-and-add step, single-threaded: an ascending fused add over
     /// the two copies with an exact running carry, then the mirror rebuild
     /// into the spare rev buffer. Returns whether any digit carried.
+    #[cfg(test)]
     pub fn step(&mut self) -> bool {
         let l = self.digits;
         let grew = self.prescan_grow();
@@ -606,6 +607,102 @@ impl Drop for PackedEngine {
         for handle in self.handles.drain(..) {
             handle.join().expect("packed engine worker died");
         }
+    }
+}
+
+/// The iteration loop over the dual packed representation. The engine runs
+/// with one participant while the number is small, and widens at the same
+/// working-set thresholds as the byte engine (expressed there in 64-digit
+/// limbs).
+#[inline]
+pub fn iterate_packed<T: Allocator + Clone + Copy>(
+    range: std::ops::Range<usize>,
+    starting_integer: Integer<T>,
+    tx: Option<&std::sync::mpsc::Sender<crate::parallel::StatusReport>>,
+    num_threads: usize,
+) -> crate::parallel::IterationResult<T> {
+    use crate::parallel::{
+        IterationResult, LOG_MASK, PAR_FULL_THREADS_LIMBS, PAR_THRESHOLD_LIMBS, StatusReport,
+    };
+    use std::alloc::Global;
+    use std::time::Instant;
+
+    let allocator = *starting_integer.0.allocator();
+    let mut current = PackedInt::from_integer(&starting_integer, allocator);
+    drop(starting_integer);
+
+    #[allow(unused_variables)]
+    let mut carried: bool = true; // ignore palindrome check on the first loop
+    let mut i: usize = range.start;
+    let mut engine: Option<PackedEngine> = None;
+    let mut engine_threads: usize = 0;
+
+    let start_time = Instant::now();
+
+    #[allow(unused_assignments)]
+    while likely(i < range.end) {
+        #[cfg(not(feature = "no-verify"))]
+        if unlikely(!carried) {
+            cold_path();
+            if current.is_palindrome() {
+                cold_path();
+                break;
+            }
+        }
+
+        let num_limbs = current.digits.div_ceil(LV_LEN);
+        let target_threads = if likely(num_limbs >= PAR_FULL_THREADS_LIMBS) {
+            num_threads
+        } else if num_limbs >= PAR_THRESHOLD_LIMBS {
+            num_threads.min(crate::parallel::ONE_CCD_THREADS)
+        } else {
+            1
+        };
+
+        if unlikely(engine_threads != target_threads) {
+            cold_path();
+            engine = None; // join the smaller pool before its cores are re-pinned
+            engine = Some(PackedEngine::new(target_threads));
+            engine_threads = target_threads;
+            eprintln!(
+                "Packed engine: {target_threads} thread(s) at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
+                start_time.elapsed().as_secs_f64()
+            );
+        }
+
+        carried = unsafe { engine.as_ref().unwrap_unchecked() }.step(&mut current);
+
+        if unlikely(i.is_multiple_of(LOG_MASK)) {
+            let report = StatusReport {
+                iteration: i,
+                current_value: {
+                    if unlikely(i.is_multiple_of(2usize.pow(18))) {
+                        cold_path();
+                        Some(current.to_integer(Global))
+                    } else {
+                        None
+                    }
+                },
+            };
+
+            if likely(tx.is_some()) {
+                if unlikely(
+                    unsafe { tx.as_ref().unwrap_unchecked() }
+                        .send(report)
+                        .is_err(),
+                ) {
+                    break;
+                }
+            } else {
+                cold_path();
+            }
+        }
+        i += 1;
+    }
+    IterationResult {
+        last_iteration: i,
+        start_time,
+        end_integer: current.to_integer(allocator),
     }
 }
 

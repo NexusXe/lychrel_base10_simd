@@ -559,7 +559,7 @@ SIMD Lychrel Number Search
                         );
                     }
 
-                    parallel::iterate_parallel(
+                    packed::iterate_packed(
                         starting_iteration..stop_at,
                         initial_value,
                         Some(&tx),
