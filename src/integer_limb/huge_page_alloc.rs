@@ -89,14 +89,20 @@ impl HugePageAllocator {
         Ok(Self)
     }
 
+    /// Reads the system page size into `PAGE_SIZE`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error when `sysconf(_SC_PAGESIZE)` fails.
     #[cfg(target_family = "unix")]
     pub fn init() -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
             let page_size = libc::sysconf(libc::_SC_PAGESIZE);
             if std::hint::unlikely(page_size == -1) {
                 return Err(Box::new(std::io::Error::last_os_error()));
-            } else if page_size != 0 {
-                PAGE_SIZE = std::num::NonZeroUsize::new(page_size as usize).unwrap_unchecked();
+            } else if page_size > 0 {
+                PAGE_SIZE = std::num::NonZeroUsize::new(page_size.cast_unsigned() as usize)
+                    .unwrap_unchecked();
             }
         }
         Ok(Self)
@@ -232,13 +238,7 @@ unsafe impl Allocator for HugePageAllocator {
             return Err(AllocError);
         }
 
-        if let Some(output) =
-            ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr.cast::<u8>(), size))
-        {
-            Ok(output)
-        } else {
-            Err(AllocError)
-        }
+        ptr::NonNull::new(ptr::slice_from_raw_parts_mut(ptr.cast::<u8>(), size)).ok_or(AllocError)
     }
 
     #[cfg(target_family = "unix")]

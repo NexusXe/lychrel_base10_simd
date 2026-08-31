@@ -45,18 +45,18 @@ pub const PAR_THRESHOLD_LIMBS: usize = 4096;
 pub const PAR_FULL_THREADS_LIMBS: usize = 49152;
 
 /// Threads for one CCD; the cap applied between the two size thresholds.
-pub(crate) const ONE_CCD_THREADS: usize = 8;
+pub const ONE_CCD_THREADS: usize = 8;
 
 /// Centralized sense-reversing barrier. All waiters spin; the engine never
 /// parks a thread, since iterations are microseconds apart.
-pub(crate) struct SpinBarrier {
+pub struct SpinBarrier {
     participants: usize,
     count: AtomicUsize,
     generation: AtomicUsize,
 }
 
 impl SpinBarrier {
-    pub(crate) fn new(participants: usize) -> Self {
+    pub(crate) const fn new(participants: usize) -> Self {
         Self {
             participants,
             count: AtomicUsize::new(0),
@@ -79,7 +79,7 @@ impl SpinBarrier {
 }
 
 #[repr(align(64))]
-pub(crate) struct Padded<T>(pub(crate) T);
+pub struct Padded<T>(pub(crate) T);
 
 /// Per-iteration state published by the coordinator before the start barrier
 /// and read by every worker after it. All accesses are Relaxed: the barriers
@@ -93,11 +93,11 @@ struct Shared {
     skip_len: AtomicUsize,
     stop: AtomicBool,
     ever_carried: AtomicBool,
-    /// 2 * num_threads + 1 entries: the add pass's block boundaries.
+    /// `2 * num_threads + 1` entries: the add pass's block boundaries.
     block_bounds: Box<[AtomicUsize]>,
-    /// num_threads + 1 entries: the zipper pass's pair-index boundaries.
+    /// `num_threads + 1` entries: the zipper pass's pair-index boundaries.
     zip_bounds: Box<[AtomicUsize]>,
-    /// 2 * num_threads entries: each block's speculative carry-out.
+    /// `2 * num_threads` entries: each block's speculative carry-out.
     block_carry: Box<[Padded<AtomicBool>]>,
 }
 
@@ -138,11 +138,11 @@ impl Shared {
         let skip_len = self.skip_len.load(Relaxed);
         let num_blocks = self.num_threads * 2;
 
-        let zip_lb = self.zip_bounds[t].load(Relaxed);
-        let zip_ub = self.zip_bounds[t + 1].load(Relaxed);
-        if likely(zip_lb < zip_ub) {
+        let zip_start = self.zip_bounds[t].load(Relaxed);
+        let zip_end = self.zip_bounds[t + 1].load(Relaxed);
+        if likely(zip_start < zip_end) {
             unsafe {
-                Limb::zipper(limbs_ptr, limbs_ptr.add(total_limbs - 1), zip_lb, zip_ub);
+                Limb::zipper(limbs_ptr, limbs_ptr.add(total_limbs - 1), zip_start, zip_end);
             }
         }
 
@@ -195,7 +195,7 @@ impl Shared {
 /// created from a coordinator already pinned to one CPU, and reading the
 /// affinity mask again there would collapse the whole pool onto that CPU.
 #[cfg(target_family = "unix")]
-pub(crate) fn allowed_cpus() -> &'static [usize] {
+pub fn allowed_cpus() -> &'static [usize] {
     static ALLOWED: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
     ALLOWED.get_or_init(|| unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -220,7 +220,7 @@ fn pin_to_cpu(cpu: usize) {
 }
 
 #[cfg(target_family = "unix")]
-pub(crate) fn pin_participant(t: usize, cpus: &[usize]) {
+pub fn pin_participant(t: usize, cpus: &[usize]) {
     if !cpus.is_empty() {
         pin_to_cpu(cpus[t % cpus.len()]);
     }
@@ -386,6 +386,7 @@ impl Drop for ParallelEngine {
 /// The iteration loop. The engine runs with one participant while the
 /// integer is small, and widens at the two size thresholds above.
 #[cfg(any(test, feature = "reference-impl"))]
+#[cfg_attr(test, allow(dead_code))]
 #[inline]
 pub fn iterate_parallel<T: Allocator + Clone + Copy>(
     range: std::ops::Range<usize>,

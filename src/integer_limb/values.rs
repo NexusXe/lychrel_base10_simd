@@ -35,11 +35,12 @@ pub const LV_LEN: usize = if cfg!(any(feature = "64-byte-limbs", target_feature 
     64
 };
 
-/// The wide scalar is derived from [`LV_LEN`] rather than chosen alongside it,
-/// so the two cannot disagree. `WV_LEN` in the parent module divides `LV_LEN`
-/// by this type's width, and a static assertion there requires `LimbVec` and
-/// `WideVec` to be the same size, so the scalar must be `min(8, LV_LEN)` bytes.
-/// An `LV_LEN` with no impl below is a compile error, which is the intent.
+/// Derives the wide scalar from [`LV_LEN`] so the two cannot disagree.
+///
+/// `WV_LEN` in the parent module divides `LV_LEN` by this type's width, and a
+/// static assertion there requires `LimbVec` and `WideVec` to be the same
+/// size, so the scalar must be `min(8, LV_LEN)` bytes. An `LV_LEN` with no
+/// impl below is a compile error, which is the intent.
 pub struct WideFor<const N: usize>;
 
 /// Maps a limb width to the scalar its wide view is built from.

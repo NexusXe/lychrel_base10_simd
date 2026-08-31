@@ -14,14 +14,20 @@
     all(any(target_arch = "x86_64", target_arch = "x86", not(feature = "no-avx"))),
     feature(stdarch_const_x86)
 )]
-#![deny(clippy::all)]
+#![deny(clippy::all, clippy::suboptimal_flops)]
+#![feature(trivial_bounds)]
+#![warn(clippy::pedantic, clippy::missing_const_for_fn)]
+#![warn(clippy::perf)]
+#![warn(clippy::nursery)]
 #![allow(
     clippy::missing_safety_doc,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::inline_always
+    clippy::inline_always,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::empty_enums,
 )]
-#![feature(trivial_bounds)]
 
 pub mod integer_limb;
 
@@ -77,6 +83,7 @@ enum RunType {
 }
 
 /// A parsed command line. `read_path` borrows from the argument vector.
+#[allow(clippy::struct_excessive_bools)]
 struct Args<'a> {
     exec_type: ExecType,
     run_type: RunType,
@@ -162,6 +169,7 @@ fn parse_operand<T: std::str::FromStr>(argv: &[String], idx: usize, noun: &str) 
         })
 }
 
+#[allow(clippy::similar_names)]
 fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
     // `--help` and `--version` are answered wherever they appear, including in
     // the exec type position, which is why they are matched before anything
@@ -271,6 +279,14 @@ fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
     args
 }
 
+/// # Errors
+///
+/// Returns any I/O error from discovering, reading, or writing checkpoint
+/// files.
+///
+/// # Panics
+///
+/// Panics if a checkpoint file name does not parse as an iteration number.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(not(target_feature = "avx512bw"), feature = "no-avx"))]
     eprintln!("\x1b[1;31mWarning:\x1b[22m Using portable_simd fallback code. This will be very, very slow.
@@ -436,8 +452,8 @@ SIMD Lychrel Number Search
                                 b: *const c_void,
                             ) -> c_int {
                                 let ordering = {
-                                    let path_a = unsafe { &*(a as *const PathBuf) };
-                                    let path_b = unsafe { &*(b as *const PathBuf) };
+                                    let path_a = unsafe { &*a.cast::<PathBuf>() };
+                                    let path_b = unsafe { &*b.cast::<PathBuf>() };
 
                                     let key_a = get_key_from_path(path_a);
                                     let key_b = get_key_from_path(path_b);
@@ -456,7 +472,7 @@ SIMD Lychrel Number Search
                             if !checkpoint_files.is_empty() {
                                 unsafe {
                                     libc::qsort(
-                                        checkpoint_files.as_mut_ptr() as *mut c_void,
+                                        checkpoint_files.as_mut_ptr().cast::<c_void>(),
                                         checkpoint_files.len() as libc::size_t,
                                         std::mem::size_of::<PathBuf>() as libc::size_t,
                                         Some(compare_paths),

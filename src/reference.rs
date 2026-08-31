@@ -5,7 +5,10 @@
 //! which keeps old benchmark numbers directly comparable.
 
 use crate::impossible;
-use crate::integer_limb::{Integer, LV_LEN, Limb, LimbVec, WideVec, add_resolve_limb};
+use crate::integer_limb::{
+    Integer, LV_LEN, Limb, LimbVec, LimbVecScalar, WV_LEN, WideVec, WideVecScalar,
+    add_resolve_limb,
+};
 use crate::parallel::{IterationResult, LOG_MASK, StatusReport};
 use std::alloc::{Allocator, Global};
 use std::hint::{cold_path, likely, unlikely};
@@ -74,10 +77,10 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .take_while(|(idx, _)| idx < &total_limbs)
         {
             unsafe {
-                let limb_ptr = &raw const limb.0;
+                let limb_vec_ptr = &raw const limb.0;
 
                 let reversed_limb: LimbVec =
-                    read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
+                    read_unaligned(limb_vec_ptr.byte_add(skip_len as usize)) >> 4;
 
                 overflowed = add_resolve_limb(limb, reversed_limb, overflowed, &mut ever_carried);
             }
@@ -93,24 +96,22 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             //#[cfg(all(target_feature = "avx512f", feature = "stream"))]
             unsafe {
                 // by writing the entire 64-byte cache line again, this memory doesn't have to be read at all to set the overflow
-                debug_assert_eq!(
-                    {
-                        let mut vec = LimbVec::default();
-                        vec.as_mut_array()[0] = 1;
-                        vec
-                    },
-                    std::mem::transmute::<WideVec, LimbVec>({
-                        let mut wide = WideVec::default();
-                        wide.as_mut_array()[0] = 1;
-                        wide
-                    })
-                );
-                const ONE_WIDE: WideVec = {
-                    let mut wide: WideVec = unsafe { std::mem::zeroed() };
+                const ONE_LV: LimbVec = LimbVec::from_array({
+                    let mut arr = [0 as LimbVecScalar; LV_LEN];
+                    arr[0] = 1;
+                    arr
+                });
+                const ONE_WV: WideVec = WideVec::from_array({
+                    let mut arr = [0 as WideVecScalar; WV_LEN];
+                    arr[0] = 1;
+                    arr
+                });
+                debug_assert_eq!(ONE_LV, std::mem::transmute::<WideVec, LimbVec>(ONE_WV));
+                *pad_ptr = const {
+                    let mut wide: WideVec = std::mem::zeroed();
                     wide.as_mut_array()[0] = 1;
                     wide
                 };
-                *pad_ptr = ONE_WIDE;
             }
 
             // #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]

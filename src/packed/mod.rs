@@ -29,7 +29,7 @@ use std::hint::{cold_path, likely};
 use std::simd::prelude::*;
 
 /// Digits per packed line.
-pub(crate) const DPL: usize = 2 * LV_LEN;
+pub const DPL: usize = 2 * LV_LEN;
 
 const LO_MASK: LimbVec = LimbVec::splat(0x0F);
 
@@ -117,7 +117,7 @@ fn add_resolve_line(a: LimbVec, r_lo: LimbVec, r_hi: LimbVec, carry: bool) -> Li
 
 /// The digit at slot `d` of a packed line slice.
 #[inline]
-pub(crate) fn digit_at(lines: &[Limb], d: usize) -> u8 {
+pub fn digit_at(lines: &[Limb], d: usize) -> u8 {
     let line = lines[d / DPL].0;
     let p = d % DPL;
     if p < LV_LEN {
@@ -129,7 +129,7 @@ pub(crate) fn digit_at(lines: &[Limb], d: usize) -> u8 {
 
 /// Overwrites the digit at slot `d` of a packed line slice.
 #[inline]
-pub(crate) fn set_digit(lines: &mut [Limb], d: usize, digit: u8) {
+pub fn set_digit(lines: &mut [Limb], d: usize, digit: u8) {
     debug_assert!(digit <= 9);
     let line = &mut lines[d / DPL].0;
     let p = d % DPL;
@@ -184,7 +184,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
 
     #[cfg(test)]
     #[inline]
-    pub(crate) fn a_cur(&self) -> &[Limb] {
+    pub(crate) const fn a_cur(&self) -> &[Limb] {
         &self.a[self.cur]
     }
 
@@ -221,7 +221,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
     pub fn step(&mut self) -> bool {
         let l = self.digits;
         let grew = self.prescan_grow();
-        let lp = l + grew as usize;
+        let lp = l + usize::from(grew);
         let lines = l.div_ceil(DPL);
         let lines_out = lp.div_ceil(DPL);
 
@@ -248,7 +248,7 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         }
         if carry {
             // only reachable when the top line was full to the brim
-            debug_assert!(grew && l % DPL == 0);
+            debug_assert!(grew && l.is_multiple_of(DPL));
             set_digit(dst, lp - 1, 1);
         }
 
@@ -316,9 +316,9 @@ struct SharedPacked {
     /// Triple pass only: whether any worker's repair found a wrong
     /// second-step digit.
     wrong2_seen: AtomicBool,
-    /// 2 * num_threads + 1 entries: block boundaries in lines.
+    /// `2 * num_threads + 1` entries: block boundaries in lines.
     bounds: Box<[AtomicUsize]>,
-    /// 2 * num_threads entries: each block's speculative carry-out. Only
+    /// `2 * num_threads` entries: each block's speculative carry-out. Only
     /// the low blocks (below `num_threads`) use theirs; high blocks carry
     /// per chunk instead.
     block_carry: Box<[Padded<AtomicBool>]>,
@@ -525,10 +525,10 @@ impl SharedPacked {
 
         let phi = digits % DPL;
         let idx = rev_index(phi);
-        let q = (digits / DPL) as isize;
+        let q = (digits / DPL).cast_signed();
 
         let load = |m: isize| -> (LimbVec, LimbVec) {
-            if m >= 0 && (m as usize) < lines {
+            if m >= 0 && m.cast_unsigned() < lines {
                 unpack_line(unsafe { (*src.offset(m)).0 })
             } else {
                 (LimbVec::splat(0), LimbVec::splat(0))
@@ -538,10 +538,10 @@ impl SharedPacked {
         let mut any_carried = false;
 
         let mut run_range = |start: usize, end: usize, carry_in: bool| -> bool {
-            let mut upper = load(q - start as isize);
+            let mut upper = load(q - start.cast_signed());
             let mut carry = carry_in;
             for k in start..end {
-                let m = q - 1 - k as isize;
+                let m = q - 1 - k.cast_signed();
 
                 #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
                 unsafe {
@@ -651,14 +651,14 @@ impl SharedPacked {
 
         let phi0 = digits % DPL;
         let idx0 = rev_index(phi0);
-        let q0 = (digits / DPL) as isize;
+        let q0 = (digits / DPL).cast_signed();
         let phi1 = digits1 % DPL;
         let idx1 = rev_index(phi1);
         let q1 = digits1 / DPL;
         let q1_lines = digits1.div_ceil(DPL);
 
         let load_a = |m: isize| -> (LimbVec, LimbVec) {
-            if m >= 0 && (m as usize) < lines {
+            if m >= 0 && m.cast_unsigned() < lines {
                 unpack_line(unsafe { (*src.offset(m)).0 })
             } else {
                 (LimbVec::splat(0), LimbVec::splat(0))
@@ -685,10 +685,10 @@ impl SharedPacked {
                     continue;
                 }
                 assert!(e - s <= SCRATCH_LINES, "fused scratch range overflow");
-                let mut upper = load_a(q0 - s as isize);
+                let mut upper = load_a(q0 - s.cast_signed());
                 let mut carry = false;
                 for j in s..e {
-                    let m = q0 - 1 - j as isize;
+                    let m = q0 - 1 - j.cast_signed();
 
                     #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
                     unsafe {
@@ -724,20 +724,20 @@ impl SharedPacked {
                     continue;
                 }
                 let load_s = |m: isize| -> (LimbVec, LimbVec) {
-                    if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
-                        unpack_line(rev_scr[m as usize - rev_range.0].0)
+                    if m >= 0 && m.cast_unsigned() >= rev_range.0 && m.cast_unsigned() < rev_range.1 {
+                        unpack_line(rev_scr[m.cast_unsigned() - rev_range.0].0)
                     } else {
                         debug_assert!(
-                            m < 0 || m as usize >= q1_lines,
+                            m < 0 || m.cast_unsigned() >= q1_lines,
                             "fused pass read outside its scratch ranges"
                         );
                         (LimbVec::splat(0), LimbVec::splat(0))
                     }
                 };
-                let mut upper = load_s(q1 as isize - x0 as isize);
+                let mut upper = load_s(q1.cast_signed() - x0.cast_signed());
                 let mut carry = if is_hi { false } else { lo_carry };
                 for k in x0..x1 {
-                    let m = q1 as isize - 1 - k as isize;
+                    let m = q1.cast_signed() - 1 - k.cast_signed();
 
                     #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
                     if !STREAM {
@@ -818,7 +818,7 @@ impl SharedPacked {
 
         let phi0 = digits % DPL;
         let idx0 = rev_index(phi0);
-        let q0 = (digits / DPL) as isize;
+        let q0 = (digits / DPL).cast_signed();
         let phi1 = digits1 % DPL;
         let idx1 = rev_index(phi1);
         let q1 = digits1 / DPL;
@@ -829,7 +829,7 @@ impl SharedPacked {
         let q2_lines = digits2.div_ceil(DPL);
 
         let load_a = |m: isize| -> (LimbVec, LimbVec) {
-            if m >= 0 && (m as usize) < lines {
+            if m >= 0 && m.cast_unsigned() < lines {
                 unpack_line(unsafe { (*src.offset(m)).0 })
             } else {
                 (LimbVec::splat(0), LimbVec::splat(0))
@@ -864,15 +864,15 @@ impl SharedPacked {
                 n0 <= SCRATCH_LINES && n1 <= SCRATCH_LINES,
                 "fused scratch range overflow"
             );
-            let mut up0 = load_a(q0 - s0 as isize);
-            let mut up1 = load_a(q0 - s1 as isize);
+            let mut up0 = load_a(q0 - s0.cast_signed());
+            let mut up1 = load_a(q0 - s1.cast_signed());
             let mut c0 = false;
             let mut c1 = false;
             let mut a_line = |j: usize,
                               upper: &mut (LimbVec, LimbVec),
                               carry: &mut bool,
                               out: &mut Limb| {
-                let m = q0 - 1 - j as isize;
+                let m = q0 - 1 - j.cast_signed();
 
                 #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
                 unsafe {
@@ -913,11 +913,11 @@ impl SharedPacked {
             // production and backward from the high one; a high-range line
             // the reverse.
             let load_s1 = |m: isize, rev_scr: &[Limb], rev_range: (usize, usize)| {
-                if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
-                    unpack_line(rev_scr[m as usize - rev_range.0].0)
+                if m >= 0 && m.cast_unsigned() >= rev_range.0 && m.cast_unsigned() < rev_range.1 {
+                    unpack_line(rev_scr[m.cast_unsigned() - rev_range.0].0)
                 } else {
                     debug_assert!(
-                        m < 0 || m as usize >= q1_lines,
+                        m < 0 || m.cast_unsigned() >= q1_lines,
                         "fused pass read outside its scratch ranges"
                     );
                     (LimbVec::splat(0), LimbVec::splat(0))
@@ -933,12 +933,12 @@ impl SharedPacked {
             );
             let zero = (LimbVec::splat(0), LimbVec::splat(0));
             let mut up0 = if n0 > 0 {
-                load_s1(q1 as isize - s0 as isize, scratch_hi, round.r1_hi)
+                load_s1(q1.cast_signed() - s0.cast_signed(), scratch_hi, round.r1_hi)
             } else {
                 zero
             };
             let mut up1 = if n1 > 0 {
-                load_s1(q1 as isize - s1 as isize, scratch_lo, round.r1_lo)
+                load_s1(q1.cast_signed() - s1.cast_signed(), scratch_lo, round.r1_lo)
             } else {
                 zero
             };
@@ -952,7 +952,7 @@ impl SharedPacked {
                               rev_scr: &[Limb],
                               rev_range: (usize, usize),
                               out: &mut Limb| {
-                let m = q1 as isize - 1 - j as isize;
+                let m = q1.cast_signed() - 1 - j.cast_signed();
                 let lower = load_s1(m, rev_scr, rev_range);
                 let (r_lo, r_hi) = rev_operand(phi1, idx1, lower, *upper);
                 let fwd = fwd_scr[j - fwd_base].0;
@@ -985,11 +985,11 @@ impl SharedPacked {
             // scratch level, the low chunk's chained carry and the high
             // chunk's speculated one interleaved.
             let load_s2 = |m: isize, rev_scr: &[Limb], rev_range: (usize, usize)| {
-                if m >= 0 && (m as usize) >= rev_range.0 && (m as usize) < rev_range.1 {
-                    unpack_line(rev_scr[m as usize - rev_range.0].0)
+                if m >= 0 && m.cast_unsigned() >= rev_range.0 && m.cast_unsigned() < rev_range.1 {
+                    unpack_line(rev_scr[m.cast_unsigned() - rev_range.0].0)
                 } else {
                     debug_assert!(
-                        m < 0 || m as usize >= q2_lines,
+                        m < 0 || m.cast_unsigned() >= q2_lines,
                         "fused pass read outside its scratch ranges"
                     );
                     (LimbVec::splat(0), LimbVec::splat(0))
@@ -1000,12 +1000,12 @@ impl SharedPacked {
             let n0 = x1.saturating_sub(x0);
             let n1 = y1.saturating_sub(y0);
             let mut up0 = if n0 > 0 {
-                load_s2(q2 as isize - x0 as isize, scratch_hi2, round.r2_hi)
+                load_s2(q2.cast_signed() - x0.cast_signed(), scratch_hi2, round.r2_hi)
             } else {
                 zero
             };
             let mut up1 = if n1 > 0 {
-                load_s2(q2 as isize - y0 as isize, scratch_lo2, round.r2_lo)
+                load_s2(q2.cast_signed() - y0.cast_signed(), scratch_lo2, round.r2_lo)
             } else {
                 zero
             };
@@ -1018,7 +1018,7 @@ impl SharedPacked {
                               fwd_base: usize,
                               rev_scr: &[Limb],
                               rev_range: (usize, usize)| {
-                let m = q2 as isize - 1 - k as isize;
+                let m = q2.cast_signed() - 1 - k.cast_signed();
 
                 #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
                 if !STREAM {
@@ -1106,7 +1106,7 @@ impl SharedPacked {
     /// its chunk's speculation boundary corrects the recorded carry-out
     /// instead. Misspeculation sightings are reported through `rip1_seen`
     /// and `wrong2_seen` for the coordinator's exact carry flags.
-    fn repair_pair3(&self, t: usize) {
+    fn repair_pair3(&self, worker: usize) {
         let src_ptr = self.a_src.load(Relaxed);
         let dst = self.a_dst.load(Relaxed);
         let lines = self.lines.load(Relaxed);
@@ -1136,11 +1136,11 @@ impl SharedPacked {
             cold_path();
             let top = (end_line * DPL).min(l1);
             let mut out = Vec::new();
-            let mut c = 0u8;
+            let mut carry = 0u8;
             for p in base..top {
-                let s = s1_sum(src, l, p) + c;
-                let spec = s % 10;
-                c = u8::from(s >= 10);
+                let sum = s1_sum(src, l, p) + carry;
+                let spec = sum % 10;
+                carry = u8::from(sum >= 10);
                 out.push((p, spec));
                 if spec != 9 {
                     break;
@@ -1177,8 +1177,8 @@ impl SharedPacked {
         let mut any_wrong2 = false;
 
         let hi_stride = fused_hi_stride(q2_lines, num_blocks);
-        let lo_j = t;
-        let hi_j = num_blocks - 1 - t;
+        let lo_j = worker;
+        let hi_j = num_blocks - 1 - worker;
         let lo_b = (bound(lo_j), bound(lo_j + 1));
         let hi_b = (bound(hi_j), bound(hi_j + 1));
         let mut hi_ord = 0usize;
@@ -1241,10 +1241,10 @@ impl SharedPacked {
                         continue;
                     }
                     let mut pc = false;
-                    for e in (base..s0).rev() {
-                        let s = psum(e);
-                        if s != 9 {
-                            pc = s > 9;
+                    for pos in (base..s0).rev() {
+                        let sum = psum(pos);
+                        if sum != 9 {
+                            pc = sum > 9;
                             break;
                         }
                     }
@@ -1340,9 +1340,9 @@ impl SharedPacked {
             // stream: the production's wrong value where the walk found
             // one, ground truth elsewhere.
             let consumed = |p: usize, w2: &[(usize, u8)]| -> u8 {
-                for &(wp, v) in w2 {
+                for &(wp, val) in w2 {
                     if wp == p {
-                        return v;
+                        return val;
                     }
                 }
                 s2_digit(src, l, l1, p)
@@ -1365,61 +1365,71 @@ impl SharedPacked {
             // True first-step digits for positions base..base+DPL.
             let s1_window = |base: isize| -> [u8; DPL] {
                 let mut out = [0u8; DPL];
-                let mut carry = base > 0 && s1_carry_into(src, l, base as usize);
-                for (p, o) in out.iter_mut().enumerate() {
-                    let pos = base + p as isize;
+                let mut carry = base > 0 && s1_carry_into(src, l, base.cast_unsigned());
+                for (p, slot) in out.iter_mut().enumerate() {
+                    let pos = base + p.cast_signed();
                     if pos < 0 {
                         continue;
                     }
-                    let s = s1_sum(src, l, pos as usize) + u8::from(carry);
-                    *o = s % 10;
-                    carry = s >= 10;
+                    let total = s1_sum(src, l, pos.cast_unsigned()) + u8::from(carry);
+                    *slot = total % 10;
+                    carry = total >= 10;
                 }
                 out
             };
             // True second-step digits for positions base..base+DPL: the
             // forward window and the ascending window of its mirrors.
             let s2_window = |base: isize| -> [u8; DPL] {
-                let f = s1_window(base);
-                let b = s1_window(l1 as isize - base - DPL as isize);
+                let fwd_win = s1_window(base);
+                let bwd_win = s1_window(l1.cast_signed() - base - DPL.cast_signed());
                 let mut out = [0u8; DPL];
-                let mut carry = base > 0 && s2_carry_into(src, l, l1, base as usize);
-                for (p, o) in out.iter_mut().enumerate() {
-                    let pos = base + p as isize;
+                let mut carry = base > 0 && s2_carry_into(src, l, l1, base.cast_unsigned());
+                for (p, slot) in out.iter_mut().enumerate() {
+                    let pos = base + p.cast_signed();
                     if pos < 0 {
                         continue;
                     }
-                    let sum = if (pos as usize) < l1 { f[p] + b[DPL - 1 - p] } else { 0 };
-                    let s = sum + u8::from(carry);
-                    *o = s % 10;
-                    carry = s >= 10;
+                    let sum = if pos.cast_unsigned() < l1 {
+                        fwd_win[p] + bwd_win[DPL - 1 - p]
+                    } else {
+                        0
+                    };
+                    let total = sum + u8::from(carry);
+                    *slot = total % 10;
+                    carry = total >= 10;
                 }
                 out
             };
 
-            for &k0 in &con.affected {
-                // the chain carry the pass had entering line k0: walk the
-                // consumed sums down to the chunk's speculation base
+            for &first_line in &con.affected {
+                // the chain carry the pass had entering the first affected
+                // line: walk the consumed sums down to the chunk's
+                // speculation base
                 let mut carry = false;
-                for d in (con.spec_base * DPL..k0 * DPL).rev() {
-                    let s = consumed_sum(d);
-                    if s != 9 {
-                        carry = s > 9;
+                for d in (con.spec_base * DPL..first_line * DPL).rev() {
+                    let sum = consumed_sum(d);
+                    if sum != 9 {
+                        carry = sum > 9;
                         break;
                     }
                 }
 
-                let mut k = k0;
+                let mut line_idx = first_line;
                 loop {
-                    let f = s2_window((k * DPL) as isize);
-                    let b = s2_window(l2 as isize - ((k + 1) * DPL) as isize);
+                    let fwd_win = s2_window((line_idx * DPL).cast_signed());
+                    let bwd_win =
+                        s2_window(l2.cast_signed() - ((line_idx + 1) * DPL).cast_signed());
                     let mut lo_plane = [0u8; LV_LEN];
                     let mut hi_plane = [0u8; LV_LEN];
                     for p in 0..DPL {
-                        let sum = if k * DPL + p < l2 { f[p] + b[DPL - 1 - p] } else { 0 };
-                        let s = sum + u8::from(carry);
-                        let digit = s % 10;
-                        carry = s >= 10;
+                        let sum = if line_idx * DPL + p < l2 {
+                            fwd_win[p] + bwd_win[DPL - 1 - p]
+                        } else {
+                            0
+                        };
+                        let total = sum + u8::from(carry);
+                        let digit = total % 10;
+                        carry = total >= 10;
                         if p < LV_LEN {
                             lo_plane[p] = digit;
                         } else {
@@ -1430,12 +1440,12 @@ impl SharedPacked {
                         LimbVec::from_array(lo_plane),
                         LimbVec::from_array(hi_plane),
                     );
-                    if line == unsafe { (*dst.add(k)).0 } {
+                    if line == unsafe { (*dst.add(line_idx)).0 } {
                         break; // chain and inputs agree with the pass again
                     }
-                    unsafe { *dst.add(k) = Limb(line) };
-                    k += 1;
-                    if k >= con.cap {
+                    unsafe { *dst.add(line_idx) = Limb(line) };
+                    line_idx += 1;
+                    if line_idx >= con.cap {
                         // the correction changed the chunk's carry-out;
                         // resolve_carries propagates it from here
                         if con.hi_side {
@@ -1601,14 +1611,14 @@ impl FusedScratch {
 /// so their carries are indexed by order of generation instead of by
 /// position.
 #[inline]
-fn fused_hi_stride(q1_lines: usize, num_blocks: usize) -> usize {
+const fn fused_hi_stride(q1_lines: usize, num_blocks: usize) -> usize {
     q1_lines / num_blocks / CHUNK_LINES + 3
 }
 
 /// The union of two intervals, either possibly empty; any gap between them
 /// is included.
 #[inline]
-fn interval_union(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
+const fn interval_union(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
     if a.0 >= a.1 {
         b
     } else if b.0 >= b.1 {
@@ -1624,7 +1634,7 @@ fn interval_union(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
 /// chunk lands one cell below its neighbor, and the block index breaks
 /// ties across block boundaries.
 #[inline]
-fn chunk_slot(j: usize, x: usize) -> usize {
+const fn chunk_slot(j: usize, x: usize) -> usize {
     j + x / CHUNK_LINES + 1
 }
 
@@ -1652,8 +1662,8 @@ fn for_each_round(
         if s >= e {
             return (0, 0);
         }
-        let lo = (q1 as isize - e as isize).max(0) as usize;
-        let hi = ((q1 as isize - s as isize + 1).max(0) as usize).min(q1_lines);
+        let lo = (q1.cast_signed() - e.cast_signed()).max(0).cast_unsigned();
+        let hi = (q1.cast_signed() - s.cast_signed() + 1).max(0).cast_unsigned().min(q1_lines);
         (lo, hi)
     };
 
@@ -1667,7 +1677,7 @@ fn for_each_round(
         };
         let hi = if hi_c > hi_s {
             let base = if lo.0 < lo.1 {
-                let m = (q1 as isize - lo.1 as isize).max(hi_s as isize) as usize;
+                let m = (q1.cast_signed() - lo.1.cast_signed()).max(hi_s.cast_signed()).cast_unsigned();
                 m.min(hi_c)
             } else {
                 (hi_c.saturating_sub(1) / CHUNK_LINES * CHUNK_LINES).max(hi_s)
@@ -1719,8 +1729,8 @@ fn for_each_round3(
         if s >= e {
             return (0, 0);
         }
-        let lo = (q1 as isize - e as isize).max(0) as usize;
-        let hi = ((q1 as isize - s as isize + 1).max(0) as usize).min(q1_lines);
+        let lo = (q1.cast_signed() - e.cast_signed()).max(0).cast_unsigned();
+        let hi = (q1.cast_signed() - s.cast_signed() + 1).max(0).cast_unsigned().min(q1_lines);
         (lo, hi)
     };
     for_each_round(lo_b, hi_b, q2, q2_lines, |round| {
@@ -1808,7 +1818,7 @@ impl PackedEngine {
 
         let digits = x.digits;
         let grew = x.prescan_grow();
-        let out_digits = digits + grew as usize;
+        let out_digits = digits + usize::from(grew);
         let lines = digits.div_ceil(DPL);
         let lines_out = out_digits.div_ceil(DPL);
 
@@ -1848,7 +1858,7 @@ impl PackedEngine {
         if unlikely(carry) {
             // only reachable when the input's top line was full to the brim
             cold_path();
-            debug_assert!(grew && digits % DPL == 0);
+            debug_assert!(grew && digits.is_multiple_of(DPL));
             set_digit(&mut x.a[next], out_digits - 1, 1);
         }
 
@@ -1970,7 +1980,7 @@ impl PackedEngine {
 
         let l = x.digits;
         let grew = x.prescan_grow();
-        let l1 = l + grew as usize;
+        let l1 = l + usize::from(grew);
         let lines = l.div_ceil(DPL);
         let q1 = l1 / DPL;
         let q1_lines = l1.div_ceil(DPL);
@@ -2074,11 +2084,11 @@ impl PackedEngine {
             cold_path();
             let top = (end_line * DPL).min(l1);
             let mut out = Vec::new();
-            let mut c = 0u8;
+            let mut carry = 0u8;
             for p in base..top {
-                let s = s1_sum(src, l, p) + c;
-                let spec = s % 10;
-                c = u8::from(s >= 10);
+                let sum = s1_sum(src, l, p) + carry;
+                let spec = sum % 10;
+                carry = u8::from(sum >= 10);
                 out.push((p, spec));
                 if spec != 9 {
                     break;
@@ -2270,9 +2280,9 @@ impl PackedEngine {
 
         let l = x.digits;
         let grew = x.prescan_grow();
-        let l1 = l + grew as usize;
+        let l1 = l + usize::from(grew);
         let grew2 = prescan_grow2(&x.a[x.cur], l, l1);
-        let l2 = l1 + grew2 as usize;
+        let l2 = l1 + usize::from(grew2);
         let lines = l.div_ceil(DPL);
         let q2 = l2 / DPL;
         let q2_lines = l2.div_ceil(DPL);

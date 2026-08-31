@@ -1,9 +1,9 @@
 #[cfg(target_arch = "x86")]
 #[allow(unused_imports)]
-use std::arch::x86::*;
+use std::arch::x86::{__m512i, _MM_HINT_ET0, _mm_prefetch};
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
-use std::arch::x86_64::*;
+use std::arch::x86_64::{__m512i, _MM_HINT_ET0, _mm_prefetch};
 
 use std::alloc::{Allocator, Global as GlobalAllocator};
 use std::fmt::Write;
@@ -316,9 +316,9 @@ impl Limb {
 
                 // shift these as qwords since byte-wise shifts use gfni
                 let lhs_output =
-                    *left_limb_ptr | Limb((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
+                    *left_limb_ptr | Self((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
                 let rhs_output =
-                    *right_limb_ptr | Limb((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
+                    *right_limb_ptr | Self((&mut *left_limb_ptr).reverse()).shl_wide::<4>().0;
                 // The fallback below is the exact negation of this condition,
                 // so exactly one of the two arms is always active.
                 #[cfg(all(target_feature = "avx512f", feature = "stream"))]
@@ -526,7 +526,7 @@ pub(crate) unsafe fn add_block(
     for i in start..end {
         unsafe {
             let limb = &mut *limbs_ptr.add(i).cast::<Limb>();
-            let limb_ptr = &raw const limb.0;
+            let limb_vec_ptr = &raw const limb.0;
 
             // Write-intent prefetch 16 limbs (1KiB) ahead; the line is read,
             // resolved and stored back below. Past-the-block addresses are
@@ -537,7 +537,7 @@ pub(crate) unsafe fn add_block(
             _mm_prefetch::<_MM_HINT_ET0>(limbs_ptr.add(i + 16).cast());
 
             let reversed_limb: LimbVec = if likely(i + 1 < end) {
-                read_unaligned(limb_ptr.byte_add(skip_len))
+                read_unaligned(limb_vec_ptr.byte_add(skip_len))
             } else {
                 let pair: [LimbVec; 2] = [limb.0, boundary_limb];
                 read_unaligned((&raw const pair).cast::<LimbVec>().byte_add(skip_len))
@@ -613,6 +613,13 @@ impl Checkpoint {
 }
 
 impl<T: Allocator + Clone + Copy> Integer<T> {
+    /// Writes the digit-reversed value into `output`, reusing its buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `self` is empty or the realignment
+    /// bookkeeping is inconsistent; release builds treat both as
+    /// unreachable.
     #[inline]
     pub fn reverse_into_integer(&self, output: &mut Integer<GlobalAllocator>) {
         cold_path();
@@ -645,11 +652,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             [0; LV_LEN]
         );
 
-        let right_bound = output_slice.len() as u32 - u32::from(LV_LEN as u8 - skip_len);
-        if !(right_bound - u32::from(skip_len)).is_multiple_of(LV_LEN as u32) {
+        let right_bound = output_slice.len() - usize::from(LV_LEN as u8 - skip_len);
+        if !(right_bound - usize::from(skip_len)).is_multiple_of(LV_LEN) {
             impossible!("Reversal memory copy is not a multiple of {LV_LEN:} bytes");
         }
-        output_slice.copy_within(skip_len as usize..right_bound as usize, 0);
+        output_slice.copy_within(usize::from(skip_len)..right_bound, 0);
 
         let discarded = output_vec.pop();
         debug_assert_eq!(Limb::new(), discarded.unwrap());
@@ -851,6 +858,12 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
         }
     }
 
+    /// Rebuilds the integer and its iteration number from a checkpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the checkpoint's byte length is not a whole number of
+    /// limbs.
     #[must_use]
     #[inline]
     pub fn from_checkpoint(input: &Checkpoint, allocator: T) -> (Self, usize) {
@@ -868,6 +881,11 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
             .collect()
     }
 
+    /// Formats the raw limb contents, one limb per line.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the underlying formatter.
     pub fn display_raw(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         struct LimbRawDisplay<'a>(&'a Limb);
 

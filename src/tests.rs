@@ -32,7 +32,7 @@ fn test_iterate() {
     assert_eq!(result.end_integer, integer!("881188"));
 }
 
-/// iterate_packed through the same paces as the reference loop: fixed
+/// `iterate_packed` through the same paces as the reference loop: fixed
 /// early values, the 500-step fixture, and palindrome termination.
 #[test]
 fn test_iterate_packed() {

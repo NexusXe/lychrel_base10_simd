@@ -94,5 +94,5 @@ fn test_engine_196_trajectory() {
         via_kernel.fused_reverse_add_asm_interleave();
     }
     assert_eq!(via_engine.0.len(), via_kernel.0.len());
-    assert!(via_engine == via_kernel);
+    assert_eq!(via_engine, via_kernel);
 }
