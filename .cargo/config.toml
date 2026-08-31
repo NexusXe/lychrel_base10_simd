@@ -35,6 +35,11 @@ rustflags = [
 
 [unstable]
 build-std = ["core", "std", "alloc", "proc_macro", "panic_abort"]
+# Honor the release profile's abort panic strategy in test builds too. Without
+# this, test targets are built for unwinding while build-std produces a second
+# panic-abort core, and every dependency fails with a duplicate-lang-item
+# error, so `cargo test --release` cannot build at all.
+panic-abort-tests = true
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"

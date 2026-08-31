@@ -671,7 +671,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
     }
 
     #[inline]
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     pub fn show_differences(&self, rhs: &Self) -> String {
         if self.0.is_empty() {
             impossible!("Tried to show differences between empty integers");
