@@ -44,26 +44,26 @@ pub const LV_LEN: usize = if cfg!(any(feature = "64-byte-limbs", target_feature 
 pub struct WideFor<const N: usize>;
 
 /// Maps a limb width to the scalar its wide view is built from.
-pub trait HasWideScalar {
+pub const trait HasWideScalar {
     type Scalar;
 }
 
-impl HasWideScalar for WideFor<64> {
+const impl HasWideScalar for WideFor<64> {
     type Scalar = u64;
 }
-impl HasWideScalar for WideFor<32> {
+const impl HasWideScalar for WideFor<32> {
     type Scalar = u64;
 }
-impl HasWideScalar for WideFor<16> {
+const impl HasWideScalar for WideFor<16> {
     type Scalar = u64;
 }
-impl HasWideScalar for WideFor<8> {
+const impl HasWideScalar for WideFor<8> {
     type Scalar = u64;
 }
-impl HasWideScalar for WideFor<4> {
+const impl HasWideScalar for WideFor<4> {
     type Scalar = u32;
 }
-impl HasWideScalar for WideFor<2> {
+const impl HasWideScalar for WideFor<2> {
     type Scalar = u16;
 }
 
