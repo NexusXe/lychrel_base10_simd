@@ -162,9 +162,15 @@ impl Shared {
 /// the upper ids) with the V-cache CCD's cores lowest, so pinning participant
 /// t to the t-th allowed CPU spreads threads across distinct cores and fills
 /// the large-L3 CCD before the frequency CCD.
+///
+/// The set is captured once, on the first call, which happens before any
+/// participant is pinned. A later engine (the 8-to-16 thread upgrade) is
+/// created from a coordinator already pinned to one CPU, and reading the
+/// affinity mask again there would collapse the whole pool onto that CPU.
 #[cfg(target_family = "unix")]
-fn allowed_cpus() -> Vec<usize> {
-    unsafe {
+fn allowed_cpus() -> &'static [usize] {
+    static ALLOWED: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+    ALLOWED.get_or_init(|| unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &raw mut set) != 0 {
             return Vec::new();
@@ -172,7 +178,7 @@ fn allowed_cpus() -> Vec<usize> {
         (0..libc::CPU_SETSIZE as usize)
             .filter(|&cpu| libc::CPU_ISSET(cpu, &set))
             .collect()
-    }
+    })
 }
 
 #[cfg(target_family = "unix")]
@@ -197,8 +203,8 @@ fn pin_participant(t: usize, cpus: &[usize]) {
 fn pin_participant(_t: usize, _cpus: &[usize]) {}
 
 #[cfg(not(target_family = "unix"))]
-fn allowed_cpus() -> Vec<usize> {
-    Vec::new()
+fn allowed_cpus() -> &'static [usize] {
+    &[]
 }
 
 /// A persistent pool of worker threads executing the fused reverse-and-add in
@@ -216,14 +222,13 @@ impl ParallelEngine {
         let shared = Arc::new(Shared::new(num_threads));
         let cpus = allowed_cpus();
 
-        pin_participant(0, &cpus);
+        pin_participant(0, cpus);
 
         let handles = (1..num_threads)
             .map(|t| {
                 let shared = Arc::clone(&shared);
-                let cpus = cpus.clone();
                 std::thread::spawn(move || {
-                    pin_participant(t, &cpus);
+                    pin_participant(t, cpus);
                     loop {
                         shared.barrier.wait();
                         if unlikely(shared.stop.load(Relaxed)) {
@@ -359,6 +364,10 @@ pub fn iterate_parallel<T: Allocator + Clone + Copy>(
             engine = None; // join the smaller pool before its cores are re-pinned
             engine = Some(ParallelEngine::new(target_threads));
             engine_threads = target_threads;
+            eprintln!(
+                "Parallel engine: {target_threads} threads at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
+                start_time.elapsed().as_secs_f64()
+            );
         }
 
         carried = if likely(target_threads > 1) {
