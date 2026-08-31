@@ -157,7 +157,7 @@ const impl From<LimbVec> for Limb {
 impl Limb {
     #[inline]
     #[must_use]
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(LimbVec::splat(0))
     }
 
@@ -181,7 +181,7 @@ impl Limb {
     }
 
     #[inline]
-    fn len(&self) -> u8 {
+    pub(crate) fn len(&self) -> u8 {
         const ZEROS: LimbVec = LimbVec::splat(0);
         if self.0 == ZEROS {
             impossible!("Tried to get the length of an empty limb");
@@ -394,6 +394,179 @@ impl std::fmt::Debug for Limb {
     }
 }
 
+/// Adds `reversed_limb` into `limb` and resolves every decimal carry inside
+/// the limb, returning the carry out of the limb. `forward_carry` is the carry
+/// into the limb's lowest digit. Both operands must hold clean digits (0..=9).
+#[inline(always)]
+pub(crate) unsafe fn add_resolve_limb(
+    limb: &mut Limb,
+    reversed_limb: LimbVec,
+    forward_carry: bool,
+    ever_carried: &mut bool,
+) -> bool {
+    {
+        limb.0 = (limb.0 << 4) >> 4;
+
+        if reversed_limb.simd_gt(LimbVec::splat(9)).any() {
+            impossible!("Invalid digit in reversed_limb");
+        }
+        if limb.0.simd_gt(LimbVec::splat(9)).any() {
+            impossible!("Invalid digit in limb");
+        }
+
+        // actual add done here, within the Limb struct to force quadword addition
+        *limb = *limb + Limb(reversed_limb);
+
+        for result in limb.0.as_array() {
+            if *result > 18 {
+                impossible!("Got impossible addition result");
+            }
+        }
+
+        const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
+        const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
+        const TOP_LANE: u64 = 1 << (LV_LEN - 1);
+
+        // Exact carry propagation through the hardware adder.
+        //
+        // With generate g = (digit > 9) and propagate p = (digit == 9),
+        // the carry recurrence c_i = g_i | (p_i & c_(i-1)) is the carry
+        // chain of the binary sum g + (g | p): g & (g | p) == g
+        // reproduces generate, and g ^ (g | p) == p reproduces
+        // propagate, since a digit cannot be both greater than and equal
+        // to 9. Adding those two words with the previous limb's carry as
+        // carry-in therefore resolves every carry in the limb at once,
+        // however long the run of nines, and the adder's carry-out is
+        // the carry out of the limb. The whole limb-to-limb dependency
+        // is then one `adc`.
+        let generate = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
+        let propagate = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
+        let gp = generate | propagate;
+        let (sum, adder_carry) = generate.carrying_add(gp, forward_carry);
+
+        // sum_i = g_i ^ gp_i ^ (carry into digit i), so undoing the two
+        // operands leaves the carry-in of every digit. A digit that
+        // receives a carry gains 1, and a digit that emits one loses 10;
+        // the emitting digits are the receiving ones shifted down a lane,
+        // with the carry out of the limb occupying the top lane.
+        let carry_in = sum ^ generate ^ gp;
+        let carry_out = if LV_LEN == u64::BITS as usize {
+            adder_carry
+        } else {
+            (generate | (propagate & carry_in)) & TOP_LANE != 0
+        };
+        let carry_out_mask = (carry_in >> 1) | (u64::from(carry_out) << (LV_LEN - 1));
+
+        if likely(carry_in != 0) || carry_out {
+            *ever_carried = true;
+        }
+
+        let mut output =
+            LimbVecMask::from_bitmask(carry_out_mask).select(limb.0 - TEN_VEC_BYTES, limb.0);
+        output = LimbVecMask::from_bitmask(carry_in).select(output + LimbVec::splat(1), output);
+
+        for result in output.as_array() {
+            if *result > 9 {
+                impossible!("Got impossible carry propagation result");
+            }
+        }
+
+        // The fallback below is the exact negation of this condition,
+        // so exactly one of the two arms is always active.
+        #[cfg(all(target_feature = "avx512f", feature = "stream"))]
+        unsafe {
+            _mm512_stream_si512((&raw mut limb.0).cast::<__m512i>(), output.into());
+        }
+
+        #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
+        {
+            limb.0 = output;
+        }
+
+        carry_out
+    }
+}
+
+/// The add pass of the fused reverse-and-add over limbs `start..end` of a
+/// zipped limb vector, with a speculative carry-in of zero. Returns the carry
+/// out of the block's top limb and whether any digit in the block carried.
+///
+/// `boundary_limb` must hold the zipped value of limb `end`: the last limb's
+/// unaligned reload straddles into it, and in a threaded pass its owner may
+/// have already replaced it with its own add result.
+pub(crate) unsafe fn add_block(
+    limbs_ptr: *mut LimbVec,
+    start: usize,
+    end: usize,
+    skip_len: usize,
+    boundary_limb: LimbVec,
+) -> (bool, bool) {
+    use std::ptr::read_unaligned;
+
+    if start >= end || skip_len >= LV_BYTES {
+        impossible!("Incoherent add_block bounds");
+    }
+
+    let mut overflowed = false;
+    let mut ever_carried = false;
+
+    for i in start..end {
+        unsafe {
+            let limb = &mut *limbs_ptr.add(i).cast::<Limb>();
+            let limb_ptr = &raw const limb.0;
+
+            let reversed_limb: LimbVec = if likely(i + 1 < end) {
+                read_unaligned(limb_ptr.byte_add(skip_len))
+            } else {
+                let pair: [LimbVec; 2] = [limb.0, boundary_limb];
+                read_unaligned((&raw const pair).cast::<LimbVec>().byte_add(skip_len))
+            } >> 4;
+
+            overflowed = add_resolve_limb(limb, reversed_limb, overflowed, &mut ever_carried);
+        }
+    }
+
+    (overflowed, ever_carried)
+}
+
+/// Adds one at the lowest digit of limb `start` and propagates the decimal
+/// carry upward through limbs `start..end`. Returns true when the carry
+/// propagates out of the whole range, which requires every digit in it to be
+/// nine. Digits must already be resolved (0..=9).
+pub(crate) unsafe fn increment_block(limbs_ptr: *mut LimbVec, start: usize, end: usize) -> bool {
+    const FULL_MASK: u64 = if LV_LEN == u64::BITS as usize {
+        u64::MAX
+    } else {
+        (1 << LV_LEN) - 1
+    };
+
+    for i in start..end {
+        let limb = unsafe { &mut *limbs_ptr.add(i).cast::<Limb>() };
+
+        if limb.0.simd_gt(LimbVec::splat(9)).any() {
+            impossible!("Unresolved digit in increment_block");
+        }
+
+        let nines = limb.0.simd_eq(LimbVec::splat(9)).to_bitmask();
+        if nines == FULL_MASK {
+            cold_path();
+            limb.0 = LimbVec::splat(0);
+            continue;
+        }
+
+        // The carry turns the run of nines at the bottom of the limb into
+        // zeros and stops at the first lower digit, which gains one.
+        let first_non_nine = (!nines).trailing_zeros();
+        let cleared_lanes = (1u64 << first_non_nine) - 1;
+        let mut output = LimbVecMask::from_bitmask(cleared_lanes).select(LimbVec::splat(0), limb.0);
+        output.as_mut_array()[first_non_nine as usize] += 1;
+        limb.0 = output;
+        return false;
+    }
+
+    true
+}
+
 #[derive(Clone, KnownLayout)]
 pub struct Integer<T: Allocator + Clone + Copy>(pub Vec<Limb, T>);
 
@@ -540,87 +713,7 @@ impl<T: Allocator + Clone + Copy> Integer<T> {
                 let reversed_limb: LimbVec =
                     read_unaligned(limb_ptr.byte_add(skip_len as usize)) >> 4;
 
-                limb.0 = (limb.0 << 4) >> 4;
-
-                if reversed_limb.simd_gt(LimbVec::splat(9)).any() {
-                    impossible!("Invalid digit in reversed_limb");
-                }
-                if limb.0.simd_gt(LimbVec::splat(9)).any() {
-                    impossible!("Invalid digit in limb");
-                }
-
-                let forward_carry = overflowed;
-
-                // actual add done here, within the Limb struct to force quadword addition
-                *limb = *limb + Limb(reversed_limb);
-
-                for result in limb.0.as_array() {
-                    if *result > 18 {
-                        impossible!("Got impossible addition result");
-                    }
-                }
-
-                const TEN_VEC_BYTES: LimbVec = LimbVec::splat(10);
-                const CARRY_NINE_CMP: LimbVec = LimbVec::splat(9);
-                const TOP_LANE: u64 = 1 << (LV_LEN - 1);
-
-                // Exact carry propagation through the hardware adder.
-                //
-                // With generate g = (digit > 9) and propagate p = (digit == 9),
-                // the carry recurrence c_i = g_i | (p_i & c_(i-1)) is the carry
-                // chain of the binary sum g + (g | p): g & (g | p) == g
-                // reproduces generate, and g ^ (g | p) == p reproduces
-                // propagate, since a digit cannot be both greater than and equal
-                // to 9. Adding those two words with the previous limb's carry as
-                // carry-in therefore resolves every carry in the limb at once,
-                // however long the run of nines, and the adder's carry-out is
-                // the carry out of the limb. The whole limb-to-limb dependency
-                // is then one `adc`.
-                let generate = limb.0.simd_gt(CARRY_NINE_CMP).to_bitmask();
-                let propagate = limb.0.simd_eq(CARRY_NINE_CMP).to_bitmask();
-                let gp = generate | propagate;
-                let (sum, adder_carry) = generate.carrying_add(gp, forward_carry);
-
-                // sum_i = g_i ^ gp_i ^ (carry into digit i), so undoing the two
-                // operands leaves the carry-in of every digit. A digit that
-                // receives a carry gains 1, and a digit that emits one loses 10;
-                // the emitting digits are the receiving ones shifted down a lane,
-                // with the carry out of the limb occupying the top lane.
-                let carry_in = sum ^ generate ^ gp;
-                let carry_out = if LV_LEN == u64::BITS as usize {
-                    adder_carry
-                } else {
-                    (generate | (propagate & carry_in)) & TOP_LANE != 0
-                };
-                let carry_out_mask = (carry_in >> 1) | (u64::from(carry_out) << (LV_LEN - 1));
-
-                if likely(carry_in != 0) || carry_out {
-                    ever_carried = true;
-                }
-                overflowed = carry_out;
-
-                let mut output = LimbVecMask::from_bitmask(carry_out_mask)
-                    .select(limb.0 - TEN_VEC_BYTES, limb.0);
-                output =
-                    LimbVecMask::from_bitmask(carry_in).select(output + LimbVec::splat(1), output);
-
-                for result in output.as_array() {
-                    if *result > 9 {
-                        impossible!("Got impossible carry propagation result");
-                    }
-                }
-
-                // The fallback below is the exact negation of this condition,
-                // so exactly one of the two arms is always active.
-                #[cfg(all(target_feature = "avx512f", feature = "stream"))]
-                {
-                    _mm512_stream_si512(limb_ptr as *mut __m512i, output.into());
-                }
-
-                #[cfg(not(all(target_feature = "avx512f", feature = "stream")))]
-                {
-                    limb.0 = output;
-                }
+                overflowed = add_resolve_limb(limb, reversed_limb, overflowed, &mut ever_carried);
             }
         }
 

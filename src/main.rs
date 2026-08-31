@@ -48,6 +48,7 @@ use std::time::Instant;
 use std::io::Read;
 
 mod iterate;
+mod parallel;
 
 const INITIAL_SEED: u128 = 196;
 const LIMIT_SHORT: usize = 603_567;
@@ -84,6 +85,7 @@ struct Args<'a> {
     stop_at: Option<usize>,
     no_checkpoint: bool,
     write_yield: bool,
+    num_threads: usize,
     read_path: Option<&'a Path>,
     read_verify: bool,
 }
@@ -106,6 +108,7 @@ Run options:
 --stop-at           specify iteration target number (0 means no limit; default: set by run type)
 --no-checkpoint     don't start at a checkpoint, start at iteration 1 with seed instead
 --yield             write output to file regardless of whether a palindrome was found
+--threads <n>       number of worker threads once the integer is large enough (default: 1)
 
     Run type selection:
     --bench             Run short benchmark; alias for `--no-checkpoint --stop-at {LIMIT_SHORT}`
@@ -197,6 +200,7 @@ fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
         stop_at: None,
         no_checkpoint: false,
         write_yield: false,
+        num_threads: 1,
         read_path: None,
         read_verify: false,
     };
@@ -236,6 +240,14 @@ fn parse_args(argv: &[String], checkpoint_dir: String) -> Args<'_> {
             }
             "--no-checkpoint" => args.no_checkpoint = true,
             "--yield" => args.write_yield = true,
+            "--threads" => {
+                skip_operand = true;
+                args.num_threads = parse_operand(argv, idx, "thread count");
+                if args.num_threads == 0 {
+                    eprintln!("Please specify a thread count of at least 1");
+                    std::process::exit(1);
+                }
+            }
             "--bench" => args.run_type = RunType::Bench,
             "--long-bench" => args.run_type = RunType::LongBench,
             "--longer-bench" => args.run_type = RunType::LongerBench,
@@ -295,6 +307,7 @@ The portable_simd implementation of this program is mostly for reference, and is
         stop_at,
         mut no_checkpoint,
         write_yield,
+        num_threads,
         read_path,
         read_verify,
     } = parse_args(&args, checkpoint_dir);
@@ -532,7 +545,16 @@ SIMD Lychrel Number Search
             let iteration_handle = {
                 println!("{}", "-".repeat(32));
                 thread::spawn(move || {
-                    iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
+                    if num_threads > 1 {
+                        parallel::iterate_parallel(
+                            starting_iteration..stop_at,
+                            initial_value,
+                            Some(&tx),
+                            num_threads,
+                        )
+                    } else {
+                        iterate::iterate(starting_iteration..stop_at, initial_value, Some(&tx))
+                    }
                 })
             };
 
