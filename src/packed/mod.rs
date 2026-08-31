@@ -304,19 +304,89 @@ struct SharedPacked {
 unsafe impl Send for SharedPacked {}
 unsafe impl Sync for SharedPacked {}
 
+/// A chunk's reversed digits as two vectors: the window bytes 0..64 (the
+/// chunk's top 64 digits, descending) and 64..128 (its bottom 64).
+type RevWindow = (LimbVec, LimbVec);
+
+const ZERO_WINDOW: RevWindow = (LimbVec::splat(0), LimbVec::splat(0));
+
+#[inline]
+fn store_window(stash: &mut [u8; DPL], window: RevWindow) {
+    stash[..LV_LEN].copy_from_slice(window.0.as_array());
+    stash[LV_LEN..].copy_from_slice(window.1.as_array());
+}
+
+#[inline]
+fn load_window(stash: &[u8; DPL]) -> RevWindow {
+    (
+        LimbVec::from_slice(&stash[..LV_LEN]),
+        LimbVec::from_slice(&stash[LV_LEN..]),
+    )
+}
+
+/// The bytes `[shift, shift + 64)` of the 128-byte concatenation of `a` and
+/// `b`. `shift` must be at most 64.
+#[inline(always)]
+fn align_bytes(a: LimbVec, b: LimbVec, shift: usize) -> LimbVec {
+    debug_assert!(shift <= LV_LEN);
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512vbmi",
+        not(feature = "no-avx")
+    ))]
+    {
+        use std::arch::x86_64::{__m512i, _mm512_permutex2var_epi8};
+        const IOTA: LimbVec = {
+            let mut lanes = [0u8; LV_LEN];
+            let mut i = 0;
+            while i < LV_LEN {
+                lanes[i] = i as u8;
+                i += 1;
+            }
+            LimbVec::from_array(lanes)
+        };
+        let idx = IOTA + LimbVec::splat(shift as u8);
+        unsafe {
+            LimbVec::from(_mm512_permutex2var_epi8(
+                __m512i::from(a),
+                __m512i::from(idx),
+                __m512i::from(b),
+            ))
+        }
+    }
+
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "avx512vbmi",
+        not(feature = "no-avx")
+    )))]
+    {
+        let mut buf = [0u8; 2 * LV_LEN];
+        buf[..LV_LEN].copy_from_slice(a.as_array());
+        buf[LV_LEN..].copy_from_slice(b.as_array());
+        LimbVec::from_slice(&buf[shift..shift + LV_LEN])
+    }
+}
+
 /// Writes one rev_dst line assembled from the reversed windows of chunk `k`
 /// (`cur`) and chunk `k - 1` (`prev`). Chunk `k` covers rev slots
 /// [out_digits - DPL*(k+1), out_digits - DPL*k); the line completed by its
 /// arrival is the one holding the top of that window. Targets outside
 /// [0, lines_out) are the virtual lines above the top or below slot zero.
+/// Buffer size in lines above which the pass's rev_dst stores go around the
+/// cache: the three buffers no longer fit in an L3, and a fresh-write stream
+/// pays a read-for-ownership per line unless stored non-temporally.
+const STREAM_MIN_LINES: usize = 1 << 19;
+
 #[inline(always)]
-unsafe fn emit_rev_line(
+unsafe fn emit_rev_line<const STREAM: bool>(
     rev_dst: *mut Limb,
     out_digits: usize,
     lines_out: usize,
     k: usize,
-    cur: &[u8; DPL],
-    prev: &[u8; DPL],
+    cur: RevWindow,
+    prev: RevWindow,
 ) {
     let w = out_digits as isize - (DPL * (k + 1)) as isize;
     let target = w.div_euclid(DPL as isize) + 1;
@@ -325,14 +395,30 @@ unsafe fn emit_rev_line(
     }
     let phi = out_digits % DPL;
 
-    let mut buf = [0u8; 2 * DPL];
-    buf[..DPL].copy_from_slice(cur);
-    buf[DPL..].copy_from_slice(prev);
-    let window = &buf[DPL - phi..2 * DPL - phi];
-    let lo = LimbVec::from_slice(&window[..LV_LEN]);
-    let hi = LimbVec::from_slice(&window[LV_LEN..]);
+    // The line is the 128 bytes at offset DPL - phi of [cur, prev]; its
+    // first 64 bytes are the packed line's low-digit plane.
+    let (lo, hi) = if phi == 0 {
+        prev
+    } else if phi > LV_LEN {
+        let shift = DPL - phi;
+        (align_bytes(cur.0, cur.1, shift), align_bytes(cur.1, prev.0, shift))
+    } else {
+        let shift = LV_LEN - phi;
+        (align_bytes(cur.1, prev.0, shift), align_bytes(prev.0, prev.1, shift))
+    };
+    let line = pack_line(lo, hi);
+
+    #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+    if STREAM {
+        unsafe {
+            use std::arch::x86_64::{__m512i, _mm512_stream_si512};
+            _mm512_stream_si512(rev_dst.add(target as usize).cast(), __m512i::from(line));
+        }
+        return;
+    }
+
     unsafe {
-        *rev_dst.add(target as usize) = Limb(pack_line(lo, hi));
+        *rev_dst.add(target as usize) = Limb(line);
     }
 }
 
@@ -368,6 +454,14 @@ impl SharedPacked {
     /// line from itself and its predecessor; the windows at the block's
     /// edges are stashed for the coordinator's seam assembly.
     fn run_block(&self, j: usize) {
+        if self.lines.load(Relaxed) >= STREAM_MIN_LINES {
+            self.run_block_inner::<true>(j);
+        } else {
+            self.run_block_inner::<false>(j);
+        }
+    }
+
+    fn run_block_inner<const STREAM: bool>(&self, j: usize) {
         let a = self.a_ptr.load(Relaxed);
         let rsrc = self.rev_src.load(Relaxed);
         let rdst = self.rev_dst.load(Relaxed);
@@ -384,8 +478,7 @@ impl SharedPacked {
 
         let mut carry = false;
         let mut any_carried = false;
-        let mut prev = [0u8; DPL];
-        let mut cur = [0u8; DPL];
+        let mut prev = ZERO_WINDOW;
 
         for k in start..end {
             #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
@@ -404,25 +497,31 @@ impl SharedPacked {
             any_carried |= sum.carried;
 
             // the window is the chunk's digits in descending order
-            cur[..LV_LEN].copy_from_slice(sum.hi.reverse().as_array());
-            cur[LV_LEN..].copy_from_slice(sum.lo.reverse().as_array());
+            let cur = (sum.hi.reverse(), sum.lo.reverse());
 
             if likely(k > start) {
-                unsafe { emit_rev_line(rdst, out_digits, lines_out, k, &cur, &prev) };
+                unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, k, cur, prev) };
             } else if k == 0 {
                 // the top rev_dst line: nothing above the window but padding
-                unsafe { emit_rev_line(rdst, out_digits, lines_out, k, &cur, &[0; DPL]) };
+                unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, k, cur, ZERO_WINDOW) };
             } else {
-                unsafe { *self.stash_first[j].0.get() = cur };
+                unsafe { store_window(&mut *self.stash_first[j].0.get(), cur) };
             }
             prev = cur;
         }
 
         if end == lines {
             // the bottom rev_dst line: nothing below the last window
-            unsafe { emit_rev_line(rdst, out_digits, lines_out, end, &[0; DPL], &prev) };
+            unsafe { emit_rev_line::<STREAM>(rdst, out_digits, lines_out, end, ZERO_WINDOW, prev) };
         } else {
-            unsafe { *self.stash_last[j].0.get() = prev };
+            unsafe { store_window(&mut *self.stash_last[j].0.get(), prev) };
+        }
+
+        #[cfg(all(target_feature = "avx512f", not(feature = "no-avx")))]
+        if STREAM {
+            // non-temporal stores are weakly ordered; drain them before the
+            // end barrier publishes the buffer
+            unsafe { std::arch::x86_64::_mm_sfence() };
         }
 
         self.block_carry[j].0.store(carry, Relaxed);
@@ -534,20 +633,19 @@ impl PackedEngine {
 
         // Seam lines: rev_dst lines straddling a block boundary are built
         // from the last window below the seam and the first window above it.
-        let mut below: Option<(&[u8; DPL], usize)> = None;
+        let mut below: Option<RevWindow> = None;
         for j in 0..num_blocks {
             let start = shared.bounds[j].load(Relaxed);
             let end = shared.bounds[j + 1].load(Relaxed);
             if start >= end {
                 continue;
             }
-            if let Some((prev, k)) = below
-                && start == k
+            if let Some(prev) = below
                 && start != 0
             {
-                let cur = unsafe { &*shared.stash_first[j].0.get() };
+                let cur = load_window(unsafe { &*shared.stash_first[j].0.get() });
                 unsafe {
-                    emit_rev_line(
+                    emit_rev_line::<false>(
                         x.rev[next].as_mut_ptr(),
                         out_digits,
                         lines_out,
@@ -557,7 +655,7 @@ impl PackedEngine {
                     );
                 }
             }
-            below = Some((unsafe { &*shared.stash_last[j].0.get() }, end));
+            below = Some(load_window(unsafe { &*shared.stash_last[j].0.get() }));
         }
 
         // Serial carry resolution across blocks: a block whose true carry-in
