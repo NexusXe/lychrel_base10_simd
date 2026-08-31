@@ -4,9 +4,9 @@ use crate::integer_limb::Integer;
 #[cfg(any(test, feature = "reference-impl"))]
 use crate::integer_limb::{LV_LEN, Limb, LimbVec, add_block, increment_block};
 use std::alloc::{Allocator, Global};
+use std::hint::spin_loop;
 #[cfg(any(test, feature = "reference-impl"))]
 use std::hint::{cold_path, likely, unlikely};
-use std::hint::spin_loop;
 #[cfg(any(test, feature = "reference-impl"))]
 use std::sync::Arc;
 #[cfg(any(test, feature = "reference-impl"))]
@@ -142,7 +142,12 @@ impl Shared {
         let zip_end = self.zip_bounds[t + 1].load(Relaxed);
         if likely(zip_start < zip_end) {
             unsafe {
-                Limb::zipper(limbs_ptr, limbs_ptr.add(total_limbs - 1), zip_start, zip_end);
+                Limb::zipper(
+                    limbs_ptr,
+                    limbs_ptr.add(total_limbs - 1),
+                    zip_start,
+                    zip_end,
+                );
             }
         }
 
@@ -435,7 +440,7 @@ pub fn iterate_parallel<T: Allocator + Clone + Copy>(
             engine_threads = target_threads;
             eprintln!(
                 "Parallel engine: {target_threads} thread{} at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
-                if target_threads == 1 {""} else {"s"},
+                if target_threads == 1 { "" } else { "s" },
                 start_time.elapsed().as_secs_f64()
             );
         }

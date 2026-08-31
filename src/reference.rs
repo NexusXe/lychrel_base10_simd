@@ -6,8 +6,7 @@
 
 use crate::impossible;
 use crate::integer_limb::{
-    Integer, LV_LEN, Limb, LimbVec, LimbVecScalar, WV_LEN, WideVec, WideVecScalar,
-    add_resolve_limb,
+    Integer, LV_LEN, Limb, LimbVec, LimbVecScalar, WV_LEN, WideVec, WideVecScalar, add_resolve_limb,
 };
 use crate::parallel::{IterationResult, LOG_MASK, StatusReport};
 use std::alloc::{Allocator, Global};

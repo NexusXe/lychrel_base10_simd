@@ -26,7 +26,11 @@ fn random_integer(num_limbs: usize, rng: &mut SmallRng) -> Integer<Global> {
 /// Every slot at and above `digits` in the packed buffer is zero.
 fn assert_clean_padding(x: &PackedInt<Global>, context: &str) {
     for d in x.digits..x.a_cur().len() * super::DPL {
-        assert_eq!(digit_at(x.a_cur(), d), 0, "dirty padding: {context}, slot {d}");
+        assert_eq!(
+            digit_at(x.a_cur(), d),
+            0,
+            "dirty padding: {context}, slot {d}"
+        );
     }
 }
 
@@ -205,8 +209,14 @@ fn test_packed_step2_matches_serial() {
                 let context =
                     format!("{num_threads} threads, {num_limbs} limbs, double step {step}");
                 assert_eq!(carried_serial, r.carried, "carry flag diverged: {context}");
-                assert_eq!(mid_pal, r.palindrome_mid, "mid palindrome diverged: {context}");
-                assert_eq!(serial.digits, fused.digits, "digit count diverged: {context}");
+                assert_eq!(
+                    mid_pal, r.palindrome_mid,
+                    "mid palindrome diverged: {context}"
+                );
+                assert_eq!(
+                    serial.digits, fused.digits,
+                    "digit count diverged: {context}"
+                );
                 assert!(
                     fused.to_integer(Global) == serial.to_integer(Global),
                     "value diverged: {context}"
@@ -231,7 +241,9 @@ fn test_packed_step2_all_nines() {
                 serial.step();
                 let carried_serial = serial.step();
                 let r = engine.step2(&mut fused);
-                let context = format!("all-nines, {num_threads} threads, {num_limbs} limbs, double step {step}");
+                let context = format!(
+                    "all-nines, {num_threads} threads, {num_limbs} limbs, double step {step}"
+                );
                 assert_eq!(carried_serial, r.carried, "{context}");
                 assert!(
                     fused.to_integer(Global) == serial.to_integer(Global),
@@ -298,9 +310,18 @@ fn test_packed_step3_matches_serial() {
                 let context =
                     format!("{num_threads} threads, {num_limbs} limbs, triple step {step}");
                 assert_eq!(carried_serial, r.carried, "carry flag diverged: {context}");
-                assert_eq!(mid1_pal, r.palindrome_mid1, "mid1 palindrome diverged: {context}");
-                assert_eq!(mid2_pal, r.palindrome_mid2, "mid2 palindrome diverged: {context}");
-                assert_eq!(serial.digits, fused.digits, "digit count diverged: {context}");
+                assert_eq!(
+                    mid1_pal, r.palindrome_mid1,
+                    "mid1 palindrome diverged: {context}"
+                );
+                assert_eq!(
+                    mid2_pal, r.palindrome_mid2,
+                    "mid2 palindrome diverged: {context}"
+                );
+                assert_eq!(
+                    serial.digits, fused.digits,
+                    "digit count diverged: {context}"
+                );
                 assert!(
                     fused.to_integer(Global) == serial.to_integer(Global),
                     "value diverged: {context}"
@@ -327,7 +348,9 @@ fn test_packed_step3_all_nines() {
                 serial.step();
                 let carried_serial = serial.step();
                 let r = engine.step3(&mut fused);
-                let context = format!("all-nines, {num_threads} threads, {num_limbs} limbs, triple step {step}");
+                let context = format!(
+                    "all-nines, {num_threads} threads, {num_limbs} limbs, triple step {step}"
+                );
                 assert_eq!(carried_serial, r.carried, "{context}");
                 assert!(
                     fused.to_integer(Global) == serial.to_integer(Global),

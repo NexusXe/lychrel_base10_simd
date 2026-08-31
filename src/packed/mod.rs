@@ -158,7 +158,11 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         let digits = integer.len() as usize;
         let mut buf = Vec::with_capacity_in(integer.0.len().div_ceil(2), allocator);
         for pair in integer.0.chunks(2) {
-            let hi = if pair.len() == 2 { pair[1].0 } else { LimbVec::splat(0) };
+            let hi = if pair.len() == 2 {
+                pair[1].0
+            } else {
+                LimbVec::splat(0)
+            };
             buf.push(Limb(pack_line(pair[0].0, hi)));
         }
         Self {
@@ -226,7 +230,11 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         let lines_out = lp.div_ceil(DPL);
 
         let [b0, b1] = &mut self.a;
-        let (src, dst) = if self.cur == 0 { (&*b0, b1) } else { (&*b1, b0) };
+        let (src, dst) = if self.cur == 0 {
+            (&*b0, b1)
+        } else {
+            (&*b1, b0)
+        };
         dst.resize(lines_out, Limb::new());
 
         let mut carry = false;
@@ -255,7 +263,10 @@ impl<T: Allocator + Clone + Copy> PackedInt<T> {
         debug_assert!(digit_at(dst, lp - 1) != 0, "prescan missed growth");
         if lp < dst.len() * DPL {
             debug_assert_eq!(
-                (lp..dst.len() * DPL).map(|d| digit_at(dst, d)).max().unwrap_or(0),
+                (lp..dst.len() * DPL)
+                    .map(|d| digit_at(dst, d))
+                    .max()
+                    .unwrap_or(0),
                 0,
                 "dirty padding above the top digit"
             );
@@ -415,15 +426,9 @@ fn rev_operand(
     if phi == 0 {
         (lower.1.reverse(), lower.0.reverse())
     } else if phi <= LV_LEN {
-        (
-            funnel(lower.1, idx, upper.0),
-            funnel(lower.0, idx, lower.1),
-        )
+        (funnel(lower.1, idx, upper.0), funnel(lower.0, idx, lower.1))
     } else {
-        (
-            funnel(upper.0, idx, upper.1),
-            funnel(lower.1, idx, upper.0),
-        )
+        (funnel(upper.0, idx, upper.1), funnel(lower.1, idx, upper.0))
     }
 }
 
@@ -646,8 +651,14 @@ impl SharedPacked {
 
         let lo = t;
         let hi = self.num_threads * 2 - 1 - t;
-        let lo_bounds = (self.bounds[lo].load(Relaxed), self.bounds[lo + 1].load(Relaxed));
-        let hi_bounds = (self.bounds[hi].load(Relaxed), self.bounds[hi + 1].load(Relaxed));
+        let lo_bounds = (
+            self.bounds[lo].load(Relaxed),
+            self.bounds[lo + 1].load(Relaxed),
+        );
+        let hi_bounds = (
+            self.bounds[hi].load(Relaxed),
+            self.bounds[hi + 1].load(Relaxed),
+        );
 
         let phi0 = digits % DPL;
         let idx0 = rev_index(phi0);
@@ -665,7 +676,11 @@ impl SharedPacked {
             }
         };
 
-        let FusedScratch { lo: scratch_lo, hi: scratch_hi, .. } = scratch;
+        let FusedScratch {
+            lo: scratch_lo,
+            hi: scratch_hi,
+            ..
+        } = scratch;
 
         let mut carried1 = false;
         let mut carried2 = false;
@@ -716,15 +731,30 @@ impl SharedPacked {
             // chunk reads forward from r_lo and backward from r_hi; the
             // high chunk the reverse.
             for (chunk, fwd_range, fwd_scr, rev_range, rev_scr, is_hi) in [
-                (round.lo, round.r_lo, &scratch_lo, round.r_hi, &scratch_hi, false),
-                (round.hi, round.r_hi, &scratch_hi, round.r_lo, &scratch_lo, true),
+                (
+                    round.lo,
+                    round.r_lo,
+                    &scratch_lo,
+                    round.r_hi,
+                    &scratch_hi,
+                    false,
+                ),
+                (
+                    round.hi,
+                    round.r_hi,
+                    &scratch_hi,
+                    round.r_lo,
+                    &scratch_lo,
+                    true,
+                ),
             ] {
                 let (x0, x1) = chunk;
                 if x0 >= x1 {
                     continue;
                 }
                 let load_s = |m: isize| -> (LimbVec, LimbVec) {
-                    if m >= 0 && m.cast_unsigned() >= rev_range.0 && m.cast_unsigned() < rev_range.1 {
+                    if m >= 0 && m.cast_unsigned() >= rev_range.0 && m.cast_unsigned() < rev_range.1
+                    {
                         unpack_line(rev_scr[m.cast_unsigned() - rev_range.0].0)
                     } else {
                         debug_assert!(
@@ -813,8 +843,14 @@ impl SharedPacked {
 
         let lo = t;
         let hi = self.num_threads * 2 - 1 - t;
-        let lo_bounds = (self.bounds[lo].load(Relaxed), self.bounds[lo + 1].load(Relaxed));
-        let hi_bounds = (self.bounds[hi].load(Relaxed), self.bounds[hi + 1].load(Relaxed));
+        let lo_bounds = (
+            self.bounds[lo].load(Relaxed),
+            self.bounds[lo + 1].load(Relaxed),
+        );
+        let hi_bounds = (
+            self.bounds[hi].load(Relaxed),
+            self.bounds[hi + 1].load(Relaxed),
+        );
 
         let phi0 = digits % DPL;
         let idx0 = rev_index(phi0);
@@ -868,32 +904,30 @@ impl SharedPacked {
             let mut up1 = load_a(q0 - s1.cast_signed());
             let mut c0 = false;
             let mut c1 = false;
-            let mut a_line = |j: usize,
-                              upper: &mut (LimbVec, LimbVec),
-                              carry: &mut bool,
-                              out: &mut Limb| {
-                let m = q0 - 1 - j.cast_signed();
+            let mut a_line =
+                |j: usize, upper: &mut (LimbVec, LimbVec), carry: &mut bool, out: &mut Limb| {
+                    let m = q0 - 1 - j.cast_signed();
 
-                #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
-                unsafe {
-                    use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(j + 16).cast());
-                    _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
-                }
+                    #[cfg(all(target_arch = "x86_64", not(feature = "no-prefetch")))]
+                    unsafe {
+                        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_add(j + 16).cast());
+                        _mm_prefetch::<_MM_HINT_T0>(src.wrapping_offset(m - 16).cast());
+                    }
 
-                let lower = load_a(m);
-                let (r_lo, r_hi) = rev_operand(phi0, idx0, lower, *upper);
-                let fwd = if j < lines {
-                    unsafe { (*src.add(j)).0 }
-                } else {
-                    LimbVec::splat(0)
+                    let lower = load_a(m);
+                    let (r_lo, r_hi) = rev_operand(phi0, idx0, lower, *upper);
+                    let fwd = if j < lines {
+                        unsafe { (*src.add(j)).0 }
+                    } else {
+                        LimbVec::splat(0)
+                    };
+                    let sum = add_resolve_line(fwd, r_lo, r_hi, *carry);
+                    *out = Limb(sum.packed);
+                    *carry = sum.carry_out;
+                    carried1 |= sum.carried;
+                    *upper = lower;
                 };
-                let sum = add_resolve_line(fwd, r_lo, r_hi, *carry);
-                *out = Limb(sum.packed);
-                *carry = sum.carry_out;
-                carried1 |= sum.carried;
-                *upper = lower;
-            };
             let n = n0.min(n1);
             for i in 0..n {
                 a_line(s0 + i, &mut up0, &mut c0, &mut scratch_lo[i]);
@@ -966,18 +1000,50 @@ impl SharedPacked {
             };
             let n = n0.min(n1);
             for i in 0..n {
-                b_line(s0 + i, &mut up0, &mut c0, scratch_lo, round.r1_lo.0,
-                       scratch_hi, round.r1_hi, &mut scratch_lo2[i]);
-                b_line(s1 + i, &mut up1, &mut c1, scratch_hi, round.r1_hi.0,
-                       scratch_lo, round.r1_lo, &mut scratch_hi2[i]);
+                b_line(
+                    s0 + i,
+                    &mut up0,
+                    &mut c0,
+                    scratch_lo,
+                    round.r1_lo.0,
+                    scratch_hi,
+                    round.r1_hi,
+                    &mut scratch_lo2[i],
+                );
+                b_line(
+                    s1 + i,
+                    &mut up1,
+                    &mut c1,
+                    scratch_hi,
+                    round.r1_hi.0,
+                    scratch_lo,
+                    round.r1_lo,
+                    &mut scratch_hi2[i],
+                );
             }
             for i in n..n0 {
-                b_line(s0 + i, &mut up0, &mut c0, scratch_lo, round.r1_lo.0,
-                       scratch_hi, round.r1_hi, &mut scratch_lo2[i]);
+                b_line(
+                    s0 + i,
+                    &mut up0,
+                    &mut c0,
+                    scratch_lo,
+                    round.r1_lo.0,
+                    scratch_hi,
+                    round.r1_hi,
+                    &mut scratch_lo2[i],
+                );
             }
             for i in n..n1 {
-                b_line(s1 + i, &mut up1, &mut c1, scratch_hi, round.r1_hi.0,
-                       scratch_lo, round.r1_lo, &mut scratch_hi2[i]);
+                b_line(
+                    s1 + i,
+                    &mut up1,
+                    &mut c1,
+                    scratch_hi,
+                    round.r1_hi.0,
+                    scratch_lo,
+                    round.r1_lo,
+                    &mut scratch_hi2[i],
+                );
             }
             drop(b_line);
 
@@ -1000,12 +1066,20 @@ impl SharedPacked {
             let n0 = x1.saturating_sub(x0);
             let n1 = y1.saturating_sub(y0);
             let mut up0 = if n0 > 0 {
-                load_s2(q2.cast_signed() - x0.cast_signed(), scratch_hi2, round.r2_hi)
+                load_s2(
+                    q2.cast_signed() - x0.cast_signed(),
+                    scratch_hi2,
+                    round.r2_hi,
+                )
             } else {
                 zero
             };
             let mut up1 = if n1 > 0 {
-                load_s2(q2.cast_signed() - y0.cast_signed(), scratch_lo2, round.r2_lo)
+                load_s2(
+                    q2.cast_signed() - y0.cast_signed(),
+                    scratch_lo2,
+                    round.r2_lo,
+                )
             } else {
                 zero
             };
@@ -1041,18 +1115,46 @@ impl SharedPacked {
             };
             let n = n0.min(n1);
             for i in 0..n {
-                c_line(x0 + i, &mut up0, &mut c0, scratch_lo2, round.r2_lo.0,
-                       scratch_hi2, round.r2_hi);
-                c_line(y0 + i, &mut up1, &mut c1, scratch_hi2, round.r2_hi.0,
-                       scratch_lo2, round.r2_lo);
+                c_line(
+                    x0 + i,
+                    &mut up0,
+                    &mut c0,
+                    scratch_lo2,
+                    round.r2_lo.0,
+                    scratch_hi2,
+                    round.r2_hi,
+                );
+                c_line(
+                    y0 + i,
+                    &mut up1,
+                    &mut c1,
+                    scratch_hi2,
+                    round.r2_hi.0,
+                    scratch_lo2,
+                    round.r2_lo,
+                );
             }
             for i in n..n0 {
-                c_line(x0 + i, &mut up0, &mut c0, scratch_lo2, round.r2_lo.0,
-                       scratch_hi2, round.r2_hi);
+                c_line(
+                    x0 + i,
+                    &mut up0,
+                    &mut c0,
+                    scratch_lo2,
+                    round.r2_lo.0,
+                    scratch_hi2,
+                    round.r2_hi,
+                );
             }
             for i in n..n1 {
-                c_line(y0 + i, &mut up1, &mut c1, scratch_hi2, round.r2_hi.0,
-                       scratch_lo2, round.r2_lo);
+                c_line(
+                    y0 + i,
+                    &mut up1,
+                    &mut c1,
+                    scratch_hi2,
+                    round.r2_hi.0,
+                    scratch_lo2,
+                    round.r2_lo,
+                );
             }
             drop(c_line);
             lo_carry = c0;
@@ -1436,10 +1538,8 @@ impl SharedPacked {
                             hi_plane[p - LV_LEN] = digit;
                         }
                     }
-                    let line = pack_line(
-                        LimbVec::from_array(lo_plane),
-                        LimbVec::from_array(hi_plane),
-                    );
+                    let line =
+                        pack_line(LimbVec::from_array(lo_plane), LimbVec::from_array(hi_plane));
                     if line == unsafe { (*dst.add(line_idx)).0 } {
                         break; // chain and inputs agree with the pass again
                     }
@@ -1663,7 +1763,10 @@ fn for_each_round(
             return (0, 0);
         }
         let lo = (q1.cast_signed() - e.cast_signed()).max(0).cast_unsigned();
-        let hi = (q1.cast_signed() - s.cast_signed() + 1).max(0).cast_unsigned().min(q1_lines);
+        let hi = (q1.cast_signed() - s.cast_signed() + 1)
+            .max(0)
+            .cast_unsigned()
+            .min(q1_lines);
         (lo, hi)
     };
 
@@ -1677,7 +1780,9 @@ fn for_each_round(
         };
         let hi = if hi_c > hi_s {
             let base = if lo.0 < lo.1 {
-                let m = (q1.cast_signed() - lo.1.cast_signed()).max(hi_s.cast_signed()).cast_unsigned();
+                let m = (q1.cast_signed() - lo.1.cast_signed())
+                    .max(hi_s.cast_signed())
+                    .cast_unsigned();
                 m.min(hi_c)
             } else {
                 (hi_c.saturating_sub(1) / CHUNK_LINES * CHUNK_LINES).max(hi_s)
@@ -1730,7 +1835,10 @@ fn for_each_round3(
             return (0, 0);
         }
         let lo = (q1.cast_signed() - e.cast_signed()).max(0).cast_unsigned();
-        let hi = (q1.cast_signed() - s.cast_signed() + 1).max(0).cast_unsigned().min(q1_lines);
+        let hi = (q1.cast_signed() - s.cast_signed() + 1)
+            .max(0)
+            .cast_unsigned()
+            .min(q1_lines);
         (lo, hi)
     };
     for_each_round(lo_b, hi_b, q2, q2_lines, |round| {
@@ -1885,8 +1993,7 @@ impl PackedEngine {
             let mut carry_out = carry_out;
             if unlikely(carry) {
                 cold_path();
-                let (_, escaped) =
-                    increment_digits(dst, start * DPL, (end * DPL).min(out_digits));
+                let (_, escaped) = increment_digits(dst, start * DPL, (end * DPL).min(out_digits));
                 carry_out |= escaped;
             }
             carry_out
@@ -1934,8 +2041,7 @@ impl PackedEngine {
             let mut carry_out = carry_out;
             if unlikely(carry) {
                 cold_path();
-                let (_, escaped) =
-                    increment_digits(dst, start * DPL, (end * DPL).min(out_digits));
+                let (_, escaped) = increment_digits(dst, start * DPL, (end * DPL).min(out_digits));
                 carry_out |= escaped;
             }
             carry_out
@@ -1953,12 +2059,18 @@ impl PackedEngine {
                 let t = num_blocks - 1 - j;
                 let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
                 let mut ord = 0usize;
-                for_each_round((bound(t), bound(t + 1)), (start, end), q1, q1_lines, |round| {
-                    if round.hi.0 < round.hi.1 {
-                        chunks.push((round.hi.0, round.hi.1, ord));
-                        ord += 1;
-                    }
-                });
+                for_each_round(
+                    (bound(t), bound(t + 1)),
+                    (start, end),
+                    q1,
+                    q1_lines,
+                    |round| {
+                        if round.hi.0 < round.hi.1 {
+                            chunks.push((round.hi.0, round.hi.1, ord));
+                            ord += 1;
+                        }
+                    },
+                );
                 for &(s, e, o) in chunks.iter().rev() {
                     let slot = (j - num_threads) * hi_stride + o;
                     carry = resolve(carry, s, e, self.chunk_carries[slot].load(Relaxed));
@@ -2245,10 +2357,8 @@ impl PackedEngine {
                             hi_plane[p - LV_LEN] = digit;
                         }
                     }
-                    let line = pack_line(
-                        LimbVec::from_array(lo_plane),
-                        LimbVec::from_array(hi_plane),
-                    );
+                    let line =
+                        pack_line(LimbVec::from_array(lo_plane), LimbVec::from_array(hi_plane));
                     if line == dst[k].0 {
                         break; // chain and inputs agree with the pass again
                     }
@@ -2483,7 +2593,7 @@ pub fn iterate_packed<T: Allocator + Clone + Copy>(
             engine_threads = target_threads;
             eprintln!(
                 "Packed engine: {target_threads} thread{} at iteration {i} ({num_limbs} limbs, {:.3} s elapsed)",
-                if target_threads == 1 {""} else {"s"},
+                if target_threads == 1 { "" } else { "s" },
                 start_time.elapsed().as_secs_f64()
             );
         }
@@ -2498,8 +2608,7 @@ pub fn iterate_packed<T: Allocator + Clone + Copy>(
         // Below the streaming threshold both buffers fit in L3, reads are
         // cache hits either way, and the fused passes' scratch round trips
         // only cost, so the single-step pass runs instead.
-        let fused_ok =
-            current.digits >= STREAM_MIN_LINES * DPL && !i.is_multiple_of(LOG_MASK);
+        let fused_ok = current.digits >= STREAM_MIN_LINES * DPL && !i.is_multiple_of(LOG_MASK);
         if likely(fused_ok && !(i + 1).is_multiple_of(LOG_MASK) && i + 3 <= range.end) {
             #[cfg(not(feature = "no-verify"))]
             let digits_in = current.digits;

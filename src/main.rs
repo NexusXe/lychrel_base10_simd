@@ -26,7 +26,7 @@
     clippy::cast_precision_loss,
     clippy::too_many_lines,
     clippy::items_after_statements,
-    clippy::empty_enums,
+    clippy::empty_enums
 )]
 
 pub mod integer_limb;

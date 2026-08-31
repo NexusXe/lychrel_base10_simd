@@ -313,7 +313,6 @@ impl Limb {
                 let left_limb_ptr = limb_ptr.add(i);
                 let right_limb_ptr = rev_ptr.sub(i);
 
-
                 // shift these as qwords since byte-wise shifts use gfni
                 let lhs_output =
                     *left_limb_ptr | Self((&mut *right_limb_ptr).reverse()).shl_wide::<4>().0;
